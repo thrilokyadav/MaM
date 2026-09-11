@@ -1,0 +1,6 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 1
+Bundle-Name: MAM Platform Workflow
+Bundle-SymbolicName: com.mam.platform.workflow;singleton:=true
+Bundle-Vendor: MAM Platform
+Nuxeo-Component: OSGI-INF/mam-workflow-contrib.xml

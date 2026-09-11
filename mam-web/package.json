@@ -1,0 +1,29 @@
+{
+  "name": "mam-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MAM front-end. Custom React/TypeScript/Vite UI that talks to the Nuxeo backend at /nuxeo. Not affiliated with Nuxeo Web UI.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "0.469.0",
+    "oidc-client-ts": "3.5.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-oidc-context": "3.3.1",
+    "react-router-dom": "6.28.0"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "typescript": "5.6.3",
+    "vite": "5.4.11"
+  }
+}

@@ -1,0 +1,54 @@
+.metric-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-4);
+  align-items: center;
+  padding: var(--space-5) var(--space-5);
+  background: var(--surface);
+  border: var(--border-hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+.metric-card-link:hover {
+  border-color: var(--border-strong);
+  text-decoration: none;
+  color: inherit;
+  transform: translateY(-1px);
+}
+
+.metric-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-md);
+  display: grid;
+  place-items: center;
+}
+.metric-icon svg { width: 20px; height: 20px; }
+
+.metric-icon-neutral { background: var(--surface-sunk);   color: var(--text); }
+.metric-icon-accent  { background: var(--accent-soft);    color: var(--accent); }
+.metric-icon-success { background: var(--status-approved-bg); color: var(--status-approved-fg); }
+.metric-icon-warning { background: var(--status-qc-bg);   color: var(--status-qc-fg); }
+.metric-icon-danger  { background: var(--status-rejected-bg); color: var(--status-rejected-fg); }
+
+.metric-body { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.metric-label {
+  color: var(--text-subtle);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: var(--fw-semibold);
+}
+.metric-value {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: var(--fw-semibold);
+  line-height: 1.05;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.metric-hint { color: var(--text-subtle); font-size: var(--fs-xs); }
+.metric-skeleton { height: 22px; width: 60px; display: inline-block; }

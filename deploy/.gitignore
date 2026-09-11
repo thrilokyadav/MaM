@@ -1,0 +1,11 @@
+# Real production credentials -- never commit.
+.env
+
+# TLS material and ACME challenge scratch space.
+nginx/certs/*
+!nginx/certs/.gitkeep
+nginx/certbot-www/*
+!nginx/certbot-www/.gitkeep
+
+# Backup output.
+scripts/backups/

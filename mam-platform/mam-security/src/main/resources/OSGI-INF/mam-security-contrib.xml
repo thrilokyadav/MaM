@@ -1,0 +1,224 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  MAM security foundation.
+
+  Registers six MAM-specific atomic permissions with Nuxeo's stock
+  `SecurityService` via the `permissions` extension point (same
+  mechanism used by nuxeo-core to declare `Read`, `Write`, and
+  `Everything`). Also ships four compound permissions that bundle the
+  atomic set required by each role, so ACL grants can be expressed as a
+  single permission per role. None of the compounds is included in any
+  broader compound (in particular, none touch `Read`, `Write`, or
+  `Everything`); the only implicit path to a MAM permission is the
+  built-in Nuxeo `Everything` shortcut used by Administrator, which is
+  exactly the behavior the role contract calls for.
+
+  IMPORTANT: registering a permission with SecurityService does not by
+  itself enforce anything. Enforcement happens only where a code path
+  calls `session.hasPermission(doc, "<name>")`, an action filter
+  declares `<permission>...</permission>`, or an ACL grants /
+  denies the permission on a document. The README documents which
+  MAM permissions are enforced today and which are contract markers
+  awaiting downstream pipelines.
+-->
+<component name="com.mam.platform.security.permissions" version="1.0">
+
+  <require>org.nuxeo.ecm.core.security.defaultPermissions</require>
+
+  <extension target="org.nuxeo.ecm.core.security.SecurityService" point="permissions">
+
+    <!-- ============================================================
+         Atomic MAM permissions. All flat: no <include>, so they are
+         never implicitly granted via a Nuxeo core compound like
+         `Write` or `Everything`. Administrator still passes every
+         check because Nuxeo's SecurityService special-cases the
+         `Everything` permission for the built-in administrators
+         group. That is the desired production behavior and is
+         explicitly noted in the role contract.
+         ============================================================ -->
+
+    <permission name="MAM_EditMetadata">
+      <documentation>
+        Semantic marker: the principal is allowed to edit MAM broadcast
+        metadata (broadcast:* schema fields) on a BroadcastAsset /
+        BroadcastVideo. Not enforced by Nuxeo core today: core write
+        paths gate on `WriteProperties` (which is included in `Write`).
+        MAM producers and archivists must therefore be granted `Write`
+        alongside `MAM_EditMetadata` to actually mutate the document,
+        which is why the role compounds below bundle both.
+      </documentation>
+    </permission>
+
+    <permission name="MAM_SubmitForReview">
+      <documentation>
+        The principal is allowed to submit a BroadcastAsset for the
+        MAM Editorial Approval workflow. Enforced today: the
+        availability filter `filter@MAM_EDITORIAL_APPROVAL` declares
+        `<permission>MAM_SubmitForReview</permission>`, which
+        `DocumentRoutingServiceImpl.canCreateInstance` checks before
+        starting a route. Users without this permission on the target
+        document receive HTTP 400 from `POST /api/v1/workflow`.
+      </documentation>
+    </permission>
+
+    <permission name="MAM_Approve">
+      <documentation>
+        The principal is allowed to approve a MAM asset. Enforced
+        today via workflow task assignment: the `NodeEditorial` task
+        in the MAM Editorial Approval route is assigned to the
+        `mam-editors` group, and only members of that group (plus
+        Administrator via `Everything`) can complete it with the
+        `approve` button. Direct-call enforcement (bypassing the
+        workflow) requires a future publishing / lifecycle operation
+        to check this permission explicitly.
+      </documentation>
+    </permission>
+
+    <permission name="MAM_Reject">
+      <documentation>
+        The principal is allowed to reject a MAM asset. Enforcement
+        parallels `MAM_Approve`: only members of the `mam-editors`
+        group (or Administrator) can drive the `reject` transition on
+        the QC or Editorial task.
+      </documentation>
+    </permission>
+
+    <permission name="MAM_Publish">
+      <documentation>
+        The principal is allowed to publish a MAM asset to a
+        downstream distribution target. Contract-only today: no MAM
+        publishing pipeline exists yet, so no code path checks this
+        permission. It is registered so that ACLs, page providers,
+        and future publish operations can reference it by name from
+        day one.
+      </documentation>
+    </permission>
+
+    <permission name="MAM_Archive">
+      <documentation>
+        The principal is allowed to move a MAM asset between archive
+        states (`broadcast:archiveState`). Contract-only today: no
+        MAM archive pipeline exists yet.
+      </documentation>
+    </permission>
+
+    <!-- ============================================================
+         Role bundles. These compounds exist only so ACLs can express
+         a role grant with a single permission name. They are NOT
+         referenced by any wider compound; nothing in Nuxeo core
+         includes them, and this contribution deliberately does not
+         add them to `Everything`.
+         ============================================================ -->
+
+    <permission name="MAM_ProducerAccess">
+      <documentation>
+        Bundle granted to members of `mam-producers`. Producers create
+        and edit assets and submit them into the editorial workflow.
+      </documentation>
+      <include>Read</include>
+      <include>Write</include>
+      <include>MAM_EditMetadata</include>
+      <include>MAM_SubmitForReview</include>
+    </permission>
+
+    <permission name="MAM_ArchivistAccess">
+      <documentation>
+        Bundle granted to members of `mam-archivists`. Archivists edit
+        broadcast metadata (notably `broadcast:archiveState`) but do
+        not approve or reject editorial content.
+      </documentation>
+      <include>Read</include>
+      <include>Write</include>
+      <include>MAM_EditMetadata</include>
+      <include>MAM_Archive</include>
+    </permission>
+
+    <permission name="MAM_EditorAccess">
+      <documentation>
+        Bundle granted to members of `mam-editors`. Editors approve
+        or reject submissions but do not directly own asset content
+        (no `Write` on the payload).
+      </documentation>
+      <include>Read</include>
+      <include>MAM_Approve</include>
+      <include>MAM_Reject</include>
+    </permission>
+
+    <permission name="MAM_PublisherAccess">
+      <documentation>
+        Bundle granted to members of `mam-publishers`. Publishers push
+        already-approved assets to distribution channels.
+      </documentation>
+      <include>Read</include>
+      <include>MAM_Publish</include>
+    </permission>
+
+  </extension>
+
+  <!-- Make the MAM role bundles selectable in the permissions dropdown
+       so administrators can bind them via the standard Nuxeo ACL UI /
+       ACP APIs. Atomic MAM permissions are not shown by default: they
+       are meant to be composed via the role bundles above. -->
+  <extension target="org.nuxeo.ecm.core.security.SecurityService" point="permissionsVisibility">
+    <visibility>
+      <item show="true" order="60">MAM_ProducerAccess</item>
+      <item show="true" order="61">MAM_ArchivistAccess</item>
+      <item show="true" order="62">MAM_EditorAccess</item>
+      <item show="true" order="63">MAM_PublisherAccess</item>
+    </visibility>
+  </extension>
+
+  <!-- ============================================================
+       Server-enforced archive-state guard.
+
+       `MAM_Archive` (declared above) is an ACL-style permission and
+       cannot, by itself, express "only this group may change this one
+       property, even if the caller otherwise has Write". This listener
+       is the actual enforcement point: a synchronous, non-postCommit
+       core listener on `beforeDocumentModification`, which fires for
+       every `CoreSession#saveDocument` call regardless of caller (REST
+       PUT, automation, Web UI). It rejects a change to
+       `broadcast:archiveState` with a 403 (`DocumentSecurityException`)
+       unless the principal is an Administrator or a member of
+       `mam-archivists`. See ArchiveStateGuardListener's Javadoc for the
+       full rationale.
+       ============================================================ -->
+  <extension target="org.nuxeo.ecm.core.event.EventServiceComponent" point="listener">
+    <listener name="mamArchiveStateGuard"
+              class="com.mam.platform.security.listener.ArchiveStateGuardListener"
+              async="false" postCommit="false" priority="10">
+      <event>beforeDocumentModification</event>
+    </listener>
+  </extension>
+
+  <!-- ============================================================
+       Server-enforced editorial-status guard.
+
+       `broadcast:editorialStatus` previously had no server-side
+       protection at all: any caller with plain `Write` could set it to
+       any value, including `approved`, completely bypassing the
+       MAM Editorial Approval workflow. This listener closes that gap
+       the same way the archive guard above closes the equivalent gap
+       for `broadcast:archiveState` — a synchronous
+       `beforeDocumentModification` listener that fires for every
+       `CoreSession#saveDocument` call regardless of caller. Unlike the
+       archive guard, this cannot allowlist a single group (the
+       workflow engine itself writes this property under the real
+       acting user's principal, not a system session), so each
+       transition instead requires the matching MAM permission on the
+       document (`MAM_SubmitForReview` for draft/qc, `MAM_Approve` for
+       approved, `MAM_Reject` for rejected) — see
+       EditorialStatusGuardListener's Javadoc for the full rationale.
+       ============================================================ -->
+  <extension target="org.nuxeo.ecm.core.event.EventServiceComponent" point="listener">
+    <listener name="mamEditorialStatusGuard"
+              class="com.mam.platform.security.listener.EditorialStatusGuardListener"
+              async="false" postCommit="false" priority="10">
+      <event>beforeDocumentModification</event>
+    </listener>
+  </extension>
+
+</component>

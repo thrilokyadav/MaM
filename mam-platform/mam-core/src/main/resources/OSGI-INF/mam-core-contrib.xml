@@ -1,0 +1,196 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  MAM core model contributions: registers the `broadcast` schema, the
+  media-agnostic `BroadcastAsset` document type, and the video-specific
+  subtype `BroadcastVideo`. BroadcastAsset remains suitable for any file
+  payload (scripts, PDFs, audio, stills). Video-specific processing
+  (transcoded proxies, poster thumbnail, storyboard, preview) is
+  delegated to Nuxeo's stock `Video` facet, attached only to the
+  BroadcastVideo subtype. No custom converters or listeners are declared
+  by this addon.
+-->
+<component name="com.mam.platform.core.doctype" version="1.0">
+
+  <require>org.nuxeo.ecm.core.CoreExtensions</require>
+  <require>org.nuxeo.ecm.platform.query.api.PageProviderService</require>
+
+  <extension target="org.nuxeo.ecm.core.schema.TypeService" point="schema">
+    <schema name="broadcast" src="schemas/broadcast.xsd" prefix="broadcast" />
+  </extension>
+
+  <extension target="org.nuxeo.ecm.core.schema.TypeService" point="doctype">
+
+    <doctype name="BroadcastAsset" extends="Document">
+      <schema name="common" />
+      <schema name="dublincore" />
+      <schema name="uid" />
+      <schema name="files" />
+      <schema name="file" />
+      <schema name="broadcast" />
+      <facet name="Versionable" />
+      <facet name="Commentable" />
+    </doctype>
+
+    <!--
+      BroadcastVideo inherits every schema and facet of BroadcastAsset
+      (common, dublincore, uid, files, file, broadcast + Versionable,
+      Commentable) and adds three upstream facets from
+      nuxeo-platform-video:
+
+        * `Video`            attaches the `file`, `video`, `picture`
+                             schemas and gates the video conversion
+                             pipeline (proxy transcode).
+        * `HasStoryboard`    marker checked by VideoInfoWork to
+                             schedule VideoStoryboardWork (the JPEG
+                             storyboard tiles used by preview UIs).
+        * `HasVideoPreview`  marker checked in the same place; it
+                             also enables Nuxeo's picture:views
+                             generation which the ThumbnailVideoFactory
+                             uses to serve the video's poster frame.
+
+      These marker facets are declared exactly the same way on the
+      upstream `Video` doctype (see nuxeo-platform-video
+      core-types-contrib.xml). Attaching all three keeps
+      BroadcastVideo behaviourally aligned with `Video` while
+      preserving the broadcast metadata contract inherited from
+      BroadcastAsset.
+    -->
+    <doctype name="BroadcastVideo" extends="BroadcastAsset">
+      <facet name="Video" />
+      <facet name="HasStoryboard" />
+      <facet name="HasVideoPreview" />
+    </doctype>
+
+    <doctype name="Workspace" append="true">
+      <subtypes>
+        <type>BroadcastAsset</type>
+        <type>BroadcastVideo</type>
+      </subtypes>
+    </doctype>
+
+    <doctype name="Folder" append="true">
+      <subtypes>
+        <type>BroadcastAsset</type>
+        <type>BroadcastVideo</type>
+      </subtypes>
+    </doctype>
+
+    <doctype name="OrderedFolder" append="true">
+      <subtypes>
+        <type>BroadcastAsset</type>
+        <type>BroadcastVideo</type>
+      </subtypes>
+    </doctype>
+
+  </extension>
+
+  <!--
+    Named page provider `MAM_BROADCAST_ASSET_SEARCH`.
+
+    Uses Nuxeo's stock PageProviderService `searchServicePageProvider`
+    extension point (SearchServicePageProvider, a subclass of the plain
+    coreQueryPageProvider's CoreQueryDocumentPageProvider); no custom
+    search engine, no custom Java. This variant is required (not just
+    coreQueryPageProvider) specifically so the `aggregates` block below
+    is honored: CoreQueryDocumentPageProvider's hasAggregateSupport()
+    always returns false, while SearchServicePageProvider delegates
+    query execution AND aggregation to Nuxeo's SearchService, which
+    resolves to Elasticsearch/OpenSearch once nuxeo-search-client-opensearch1
+    is installed and configured (elasticsearch.addressList; see
+    mam-platform/Dockerfile.integration). The whereClause/predicate/
+    fixedPart/sort/pageSize XML shape is identical between the two
+    provider kinds (both extend BasePageProviderDescriptor), so this is
+    a drop-in swap.
+
+    The embedded H2 database used by the disposable smoke stack
+    (Dockerfile.smoke) has no fulltext search support at all
+    (org.nuxeo.ecm.core.storage.sql.jdbc.dialect.DialectH2 throws if
+    fulltext is requested), so `ecm:fulltext` queries against
+    MAM_BROADCAST_ASSET_SEARCH only succeed against the PostgreSQL +
+    Elasticsearch integration stack; this is the exact "would fail on
+    H2, proving ES is working" property the integration test asserts.
+
+    Predicates in a whereClause are automatically dropped when their
+    bound request parameter is null or empty, so every filter below is
+    optional. Free-text (`q`) matches the fulltext-indexed columns
+    (Nuxeo's default fulltext catalog covers all string-typed schema
+    properties, including `dc:title`, `dc:description`,
+    `broadcast:slug`, `broadcast:programme`, and `broadcast:bureau`).
+    NXQL `SELECT * FROM BroadcastAsset` is polymorphic, so
+    `BroadcastVideo` (and any future subtype) is included without extra
+    configuration.
+
+    Aggregates below drive faceted search UIs (counts per bucket for
+    `broadcast:storyType`, `broadcast:bureau`, and
+    `broadcast:editorialStatus`) via Elasticsearch terms aggregations.
+  -->
+  <extension target="org.nuxeo.ecm.platform.query.api.PageProviderService"
+             point="providers">
+
+    <searchServicePageProvider name="MAM_BROADCAST_ASSET_SEARCH">
+      <whereClause>
+        <predicate parameter="ecm:fulltext" operator="FULLTEXT">
+          <field name="q" />
+        </predicate>
+        <predicate parameter="broadcast:storyType" operator="=">
+          <field name="storyType" />
+        </predicate>
+        <predicate parameter="broadcast:bureau" operator="=">
+          <field name="bureau" />
+        </predicate>
+        <predicate parameter="broadcast:editorialStatus" operator="=">
+          <field name="editorialStatus" />
+        </predicate>
+        <predicate parameter="broadcast:archiveState" operator="=">
+          <field name="archiveState" />
+        </predicate>
+        <fixedPart statement="SELECT * FROM BroadcastAsset">
+          ecm:isTrashed = 0 AND ecm:isVersion = 0 AND ecm:isProxy = 0
+        </fixedPart>
+      </whereClause>
+      <!--
+        Each aggregate's <field> must resolve to a REAL schema property:
+        AggregateBase#getSelection() reads the current facet selection
+        back from the page provider's search document via
+        searchDocument.getProperty(field.getSchema(), field.getName())
+        (see nuxeo-core-query's AggregateBase.java); a field with no
+        schema/a nonexistent property NPEs (Type.isSimpleType() on a null
+        Type) as soon as any aggregate is requested, taking down the
+        whole query including the plain fulltext/filter predicates.
+        Reusing the SAME broadcast:* property already bound to the
+        matching predicate above is the standard pattern (mirrors
+        nuxeo-search-core's own search-pageprovider-contrib.xml, e.g.
+        dc_creator_agg binding to the default_search schema's dc_creator
+        field): the field carries both the current filter value AND the
+        aggregate's own selection state.
+      -->
+      <aggregates>
+        <aggregate id="storyType_agg" type="terms" parameter="broadcast:storyType">
+          <field schema="broadcast" name="storyType" />
+          <properties>
+            <property name="size">20</property>
+          </properties>
+        </aggregate>
+        <aggregate id="bureau_agg" type="terms" parameter="broadcast:bureau">
+          <field schema="broadcast" name="bureau" />
+          <properties>
+            <property name="size">20</property>
+          </properties>
+        </aggregate>
+        <aggregate id="editorialStatus_agg" type="terms" parameter="broadcast:editorialStatus">
+          <field schema="broadcast" name="editorialStatus" />
+          <properties>
+            <property name="size">20</property>
+          </properties>
+        </aggregate>
+      </aggregates>
+      <sort column="dc:modified" ascending="false" />
+      <pageSize>20</pageSize>
+    </searchServicePageProvider>
+
+  </extension>
+
+</component>

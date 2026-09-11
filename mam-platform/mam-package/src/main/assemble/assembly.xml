@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  Project-owned assembly script for the MAM Nuxeo addon package.
+  Modelled on the pattern used by Nuxeo's own marketplace packages
+  (org.nuxeo.build:ant-assembly-maven-plugin), but WITHOUT the
+  nuxeo-nxr-server diff step. A customer addon does not carve out
+  from the server: it ships its own bundles and templates directly.
+-->
+<project name="mam-package" default="build"
+         xmlns:nx="urn:nuxeo-build"
+         xmlns:artifact="urn:nuxeo-artifact">
+  <taskdef resource="org/nuxeo/build/antlib.xml" uri="urn:nuxeo-build" />
+  <taskdef resource="org/nuxeo/build/artifact/antlib.xml" uri="urn:nuxeo-artifact" />
+
+  <target name="build" description="Build ${maven.project.name}">
+    <property name="outdir" value="${maven.project.build.directory}" />
+
+    <artifact:nuxeo-expand />
+    <artifact:print output="${outdir}/dependency-tree.log" />
+
+    <!-- Fresh staging directory -->
+    <delete dir="${outdir}/package" failonerror="false" />
+    <mkdir dir="${outdir}/package" />
+    <mkdir dir="${outdir}/package/install/bundles" />
+
+    <!-- Filter and copy the package descriptor and install script. -->
+    <copy todir="${outdir}/package" overwrite="true">
+      <fileset dir="src/main/resources" />
+      <filterset>
+        <filter token="VERSION" value="${maven.project.version}" />
+      </filterset>
+    </copy>
+
+    <!-- Copy declared MAM bundles into install/bundles. Only groupId
+         com.mam.platform is shipped; test and provided artifacts are
+         excluded, as are pom-only dependencies. -->
+    <copy todir="${outdir}/package/install/bundles" overwrite="true" flatten="true">
+      <artifact:set>
+        <includes>
+          <artifact groupId="com.mam.platform" />
+        </includes>
+        <excludes>
+          <artifact scope="test" />
+          <artifact scope="provided" />
+          <artifact type="pom" />
+          <!-- Exclude the mam-package project itself; its zip is not built
+               yet at this point, so nuxeo-expand would otherwise contribute
+               its pom.xml as the artifact file. -->
+          <artifact type="zip" />
+        </excludes>
+      </artifact:set>
+    </copy>
+
+    <!-- Also ship the third-party JWT libraries mam-security depends on
+         for OIDC/OAuth2 Bearer token verification (com.auth0:java-jwt,
+         com.auth0:jwks-rsa; see JwtClaimsVerifier). These are compile
+         (not provided) scope in mam-security/pom.xml specifically so
+         they end up here; the Nuxeo distribution does not ship them by
+         default (only nuxeo-platform-login-jwt, not installed by this
+         addon, would pull in java-jwt on its own). Without this,
+         JwtBearerAuthenticator fails to instantiate at server startup
+         with NoClassDefFoundError. -->
+    <copy todir="${outdir}/package/install/bundles" overwrite="true" flatten="true">
+      <artifact:set>
+        <includes>
+          <artifact groupId="com.auth0" />
+        </includes>
+        <excludes>
+          <artifact scope="test" />
+          <artifact scope="provided" />
+          <artifact type="pom" />
+        </excludes>
+      </artifact:set>
+    </copy>
+
+    <!-- Package everything into the installable addon ZIP. -->
+    <zip destfile="${outdir}/${maven.project.artifactId}-${maven.project.version}.zip"
+         basedir="${outdir}/package" />
+    <artifact:attach
+        file="${outdir}/${maven.project.artifactId}-${maven.project.version}.zip"
+        type="zip" />
+
+    <!-- Cleanup staging. -->
+    <delete dir="${outdir}/package" failonerror="false" />
+  </target>
+
+</project>

@@ -1,0 +1,189 @@
+# (C) Copyright 2026 MAM Platform. All rights reserved.
+# Proprietary and confidential.
+#
+# Disposable Nuxeo + PostgreSQL 16 + Elasticsearch 8.x + MinIO (S3-compatible
+# object storage) integration stack. Not for production. Kept SEPARATE from
+# compose.smoke.yaml (which stays on the embedded H2 database and local
+# filesystem binary storage) so the fast, dependency-light smoke suite
+# (Upload/Workflow/Archive/JWT auth) is unaffected by this heavier stack.
+# This file exists specifically to prove:
+#   - full-text + faceted search against a real database/search-engine pair
+#     (Technical Architecture Document 2.2.1 / Product Vision Pillar 4),
+#     which H2 cannot satisfy at all (see
+#     org.nuxeo.ecm.core.storage.sql.jdbc.dialect.DialectH2, which throws
+#     if fulltext is requested against it); and
+#   - binary blob storage in S3-compatible object storage instead of the
+#     local filesystem (Technical Architecture Document 2.4.1 Binary
+#     Storage), using MinIO as a disposable, credential-free-to-operate
+#     S3-compatible server for this test harness.
+#
+# Values are supplied via .env.integration (copy .env.integration.example
+# first). Named volumes hold Postgres/Elasticsearch/MinIO/Nuxeo data so the
+# containers remain stateless across restarts; see the README section
+# "PostgreSQL + Elasticsearch integration stack" for teardown/reset
+# instructions.
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    container_name: mam-integration-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mam_minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env.integration}
+    ports:
+      - "${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    volumes:
+      - mam-integration-minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      # MinIO's own `mc ready` subcommand ships inside the server image
+      # (since RELEASE.2023-03-20), so no extra client image is needed
+      # just to probe liveness/readiness.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: "no"
+
+  # One-shot init container: creates the mam-blobs bucket (MinIO does not
+  # auto-create buckets) and exits. Nuxeo's depends_on below waits for
+  # this to complete successfully (condition: service_completed_successfully)
+  # before starting, so the bucket is guaranteed to exist by the time the
+  # S3 blob provider makes its first request.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-08T15-39-49Z
+    container_name: mam-integration-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mam_minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env.integration}
+      MAM_S3_BUCKET: ${MAM_S3_BUCKET:-mam-blobs}
+      # Priority 5: a SEPARATE bucket standing in for AWS Glacier/S3 Cold in
+      # production, used by the nuxeo.coldstorage.* nuxeo.conf properties
+      # (see Dockerfile.integration). Created here so it exists even though
+      # the nuxeo-coldstorage marketplace package itself is not installed
+      # yet (see Dockerfile.integration's comment on that addon).
+      MAM_S3_COLD_BUCKET: ${MAM_S3_COLD_BUCKET:-mam-blobs-cold}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$MAM_S3_BUCKET"
+        mc anonymous set none "local/$$MAM_S3_BUCKET"
+        mc mb --ignore-existing "local/$$MAM_S3_COLD_BUCKET"
+        mc anonymous set none "local/$$MAM_S3_COLD_BUCKET"
+        echo "Buckets $$MAM_S3_BUCKET and $$MAM_S3_COLD_BUCKET ready."
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mam-integration-postgres
+    environment:
+      POSTGRES_DB: ${PG_DB:-mam_nuxeo}
+      POSTGRES_USER: ${PG_USER:-mam_nuxeo}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set in .env.integration}
+    volumes:
+      - mam-integration-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-mam_nuxeo} -d ${PG_DB:-mam_nuxeo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: "no"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: mam-integration-elasticsearch
+    environment:
+      # Single-node dev/test topology; security disabled so the smoke
+      # harness never has to manage certs or credentials, matching the
+      # task's explicit "avoid auth complexity in the test harness"
+      # requirement. NEVER do this in a real deployment (see README).
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms512m -Xmx512m}
+    volumes:
+      - mam-integration-es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: "no"
+
+  nuxeo:
+    build:
+      context: .
+      dockerfile: Dockerfile.integration
+      args:
+        NUXEO_IMAGE: ${NUXEO_IMAGE:-nuxeo/nuxeo:2025.x}
+        MAM_SMOKE_JWT_SECRET: ${MAM_SMOKE_JWT_SECRET}
+        # PostgreSQL 16 / Elasticsearch 8.x connection settings are baked
+        # into the image as an OSGI ConfigurationService fragment (see
+        # Dockerfile.integration) rather than passed as container
+        # `environment:` entries -- Nuxeo's docker-entrypoint.sh does NOT
+        # map arbitrary environment variables onto nuxeo.conf properties
+        # (only a small fixed set like JAVA_OPTS/NUXEO_CLID/NUXEO_DEV are
+        # special-cased); this is the same mechanism already used for
+        # CSRF/JWT smoke configuration in Dockerfile.smoke.
+        PG_DB: ${PG_DB:-mam_nuxeo}
+        PG_USER: ${PG_USER:-mam_nuxeo}
+        PG_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set in .env.integration}
+        ES_INDEX_NAME: ${ES_INDEX_NAME:-mam_nuxeo}
+        # S3 (MinIO) binary storage -- see Dockerfile.integration for how
+        # these become nuxeo.s3storage.* / nuxeo.core.binarymanager
+        # nuxeo.conf properties.
+        MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mam_minio_admin}
+        MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env.integration}
+        MAM_S3_BUCKET: ${MAM_S3_BUCKET:-mam-blobs}
+        MAM_S3_COLD_BUCKET: ${MAM_S3_COLD_BUCKET:-mam-blobs-cold}
+    image: mam-platform/nuxeo-integration:local
+    container_name: mam-integration-nuxeo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${INTEGRATION_HOST_PORT:-8081}:8080"
+    environment:
+      JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx1500m}
+    volumes:
+      - mam-integration-nuxeo-data:/var/lib/nuxeo
+      - mam-integration-nuxeo-logs:/var/log/nuxeo
+      - mam-integration-nuxeo-tmp:/tmp
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/nuxeo/runningstatus"]
+      interval: 10s
+      timeout: 5s
+      retries: 90
+      start_period: 90s
+    restart: "no"
+
+volumes:
+  mam-integration-pg-data:
+    name: mam-integration-pg-data
+  mam-integration-es-data:
+    name: mam-integration-es-data
+  mam-integration-minio-data:
+    name: mam-integration-minio-data
+  mam-integration-nuxeo-data:
+    name: mam-integration-nuxeo-data
+  mam-integration-nuxeo-logs:
+    name: mam-integration-nuxeo-logs
+  mam-integration-nuxeo-tmp:
+    name: mam-integration-nuxeo-tmp

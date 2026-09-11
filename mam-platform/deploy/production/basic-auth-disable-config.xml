@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  PRODUCTION-ONLY authentication lockdown fragment.
+
+  Disables Nuxeo's built-in BASIC_AUTH plugin so that HTTP Basic
+  credentials are never accepted, leaving JWT_BEARER_AUTH (registered by
+  mam-security's mam-jwt-auth-contrib.xml) as the only way to authenticate
+  REST calls, plus FORM_AUTH for the Nuxeo Web UI login screen if that is
+  still exposed.
+
+  How this works: authenticationPlugin descriptors merge by @name across
+  every contributing component (see AuthenticationPluginDescriptor#merge
+  in nuxeo-platform-web-common) -- a later-loaded contribution for the
+  same plugin name overrides fields that are explicitly set, including
+  `enabled`. Dropping this file into
+  $NUXEO_HOME/nxserver/config at image-build time (same mechanism this
+  addon already uses for
+  mam-platform/Dockerfile.smoke's csrf-token-enable-config.xml) makes it
+  load after the addon bundles' own OSGI-INF contributions, so
+  `enabled="false"` here reliably wins.
+
+  DO NOT copy this file into the smoke image: the disposable smoke
+  harness (scripts/smoke-test.ps1) still exercises several legacy
+  Basic-auth-authenticated flows (asset/metadata CRUD, the archive-guard
+  enforcement tests) alongside the new JWT Bearer checks, so Basic Auth
+  must remain available there. This file is strictly for real
+  deployments, where the requirement is that Basic Auth must never be a
+  usable credential path.
+
+  Production deployment usage (adapt to your image-build tooling):
+
+    COPY mam-platform/deploy/production/basic-auth-disable-config.xml \
+        $NUXEO_HOME/nxserver/config/basic-auth-disable-config.xml
+
+  Also set the JWT Bearer configuration in nuxeo.conf (see README.md,
+  "Production Authentication (OIDC/OAuth2)" section) -- without a
+  configured mam.jwt.jwks.url, disabling BASIC_AUTH here would leave the
+  REST API unreachable by any credential, which is a safe failure mode
+  but presumably not the intended one.
+-->
+<component name="mam.platform.security.basicauth.disable">
+  <extension target="org.nuxeo.ecm.platform.ui.web.auth.service.PluggableAuthenticationService"
+             point="authenticators">
+    <authenticationPlugin name="BASIC_AUTH" enabled="false"
+        class="org.nuxeo.ecm.platform.ui.web.auth.plugins.BasicAuthenticator">
+    </authenticationPlugin>
+    <!--
+      The REST API (/api/v.*) does not go through BASIC_AUTH at all: it
+      uses a dedicated specific authentication chain
+      (org.nuxeo.ecm.restapi.server.auth.config's "RestAPI" chain,
+      re-declared by mam-security's mam-jwt-auth-contrib.xml to insert
+      JWT_BEARER_AUTH) whose Basic-auth leg is a SEPARATE plugin instance,
+      AUTOMATION_BASIC_AUTH (registered by nuxeo-automation-server). Both
+      must be disabled for Basic credentials to be truly unusable against
+      every REST endpoint.
+    -->
+    <authenticationPlugin name="AUTOMATION_BASIC_AUTH" enabled="false"
+        class="org.nuxeo.ecm.platform.ui.web.auth.plugins.BasicAuthenticator">
+    </authenticationPlugin>
+  </extension>
+</component>

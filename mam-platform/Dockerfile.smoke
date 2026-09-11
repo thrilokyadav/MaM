@@ -1,0 +1,144 @@
+# syntax=docker/dockerfile:1
+#
+# (C) Copyright 2026 MAM Platform. All rights reserved.
+# Proprietary and confidential.
+#
+# Disposable smoke-test image. Builds on top of a locally available Nuxeo
+# 2025 image and installs the freshly built MAM addon package. Never
+# reference credentials, cloud endpoints, or production hostnames from
+# this file.
+
+ARG NUXEO_IMAGE=nuxeo/nuxeo:2025.x
+FROM ${NUXEO_IMAGE}
+
+# Normalise line endings in shell scripts. The base image was built on
+# Windows so several shipped .sh files (nuxeoctl, install-packages.sh,
+# docker-entrypoint.sh, initnuxeo hooks) carry CRLF terminators and fail
+# with "/bin/bash^M: bad interpreter". This is a defect of the local
+# base build, not of the upstream image; fix it up-front.
+USER 0
+RUN set -eu; \
+    for f in /install-packages.sh /docker-entrypoint.sh /nuxeo-run-dev.sh \
+             /opt/nuxeo/server/bin/nuxeoctl; do \
+      if [ -f "$f" ]; then sed -i 's/\r$//' "$f"; fi; \
+    done; \
+    find /docker-entrypoint-initnuxeo.d -type f -name '*.sh' \
+         -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+
+# --------------------------------------------------------------------
+# FFmpeg / ffprobe for the smoke image only.
+#
+# The base Nuxeo image is Oracle Linux 9 (RHEL9 compatible). Nuxeo's
+# own docker README documents the RPM Fusion install path for FFmpeg;
+# on OL9 the CodeReady Builder repository is named
+# `ol9_codeready_builder`, not the Rocky `crb` alias. We enable that
+# repo, add RPM Fusion free (el9), and install ffmpeg. This stays
+# contained to the smoke image; no production image is affected.
+#
+# ccextractor is intentionally NOT installed (see task scope).
+# --------------------------------------------------------------------
+RUN set -eu; \
+    dnf -y install dnf-plugins-core; \
+    dnf config-manager --set-enabled ol9_codeready_builder; \
+    dnf -y install --nogpgcheck \
+        https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm; \
+    dnf -y install ffmpeg ffmpeg-libs; \
+    dnf clean all; \
+    rm -rf /var/cache/dnf; \
+    ffmpeg -version | head -1; \
+    ffprobe -version | head -1
+
+# --------------------------------------------------------------------
+# CSRF token enforcement — Nuxeo protects state-changing methods with
+# an Origin/target host check by default; enabling `nuxeo.csrf.token.enabled`
+# additionally requires a per-session token on every POST/PUT/PATCH/DELETE.
+# We turn this on in the smoke image so the whole stack — server, Vite
+# proxy, and mam-web client — is exercised with the stronger of the two
+# protections active. The client (nuxeoClient.ts) performs the token
+# fetch handshake documented by Nuxeo.
+# --------------------------------------------------------------------
+RUN set -eu; \
+    mkdir -p /opt/nuxeo/server/nxserver/config; \
+    cat > /opt/nuxeo/server/nxserver/config/csrf-token-enable-config.xml <<'EOF'
+<?xml version="1.0"?>
+<component name="mam.csrf.token.enable">
+  <extension target="org.nuxeo.runtime.ConfigurationService" point="configuration">
+    <property name="nuxeo.csrf.token.enabled">true</property>
+  </extension>
+</component>
+EOF
+RUN chown -R 900:0 /opt/nuxeo/server/nxserver/config
+
+# --------------------------------------------------------------------
+# JWT Bearer authentication (smoke-only configuration) — Priority 2:
+# Production Authentication (OIDC/SSO).
+#
+# mam-security's JwtBearerAuthenticator (com.mam.platform.security.auth)
+# verifies Authorization: Bearer <jwt> tokens. In production it validates
+# RS256 tokens against a real IdP's JWKS endpoint (mam.jwt.jwks.url); the
+# disposable smoke harness has no IdP to talk to, so it uses the
+# authenticator's HS256 fallback instead, driven entirely by a shared
+# secret known only to this image and to scripts/smoke-test.ps1 (which
+# mints its own HS256 tokens to exercise the 401/200 contract). This
+# secret is generated fresh for every image build — never fixed, never
+# checked in — and is meaningless outside this disposable container.
+# --------------------------------------------------------------------
+ARG MAM_SMOKE_JWT_SECRET
+RUN set -eu; \
+    if [ -z "${MAM_SMOKE_JWT_SECRET:-}" ]; then \
+      echo "MAM_SMOKE_JWT_SECRET build arg is required for the smoke image" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /opt/nuxeo/server/nxserver/config; \
+    cat > /opt/nuxeo/server/nxserver/config/mam-jwt-smoke-config.xml <<EOF
+<?xml version="1.0"?>
+<component name="mam.jwt.smoke.config">
+  <extension target="org.nuxeo.runtime.ConfigurationService" point="configuration">
+    <property name="mam.jwt.hmac.secret">${MAM_SMOKE_JWT_SECRET}</property>
+    <property name="mam.jwt.issuer">mam-smoke-harness</property>
+    <property name="mam.jwt.audience">mam-platform</property>
+    <property name="mam.jwt.groups.claim">groups</property>
+    <property name="mam.jwt.group.map.mam-producers">mam-producers</property>
+    <property name="mam.jwt.group.map.mam-editors">mam-editors</property>
+    <property name="mam.jwt.group.map.mam-archivists">mam-archivists</property>
+    <property name="mam.jwt.group.map.administrators">administrators</property>
+  </extension>
+</component>
+EOF
+RUN chown -R 900:0 /opt/nuxeo/server/nxserver/config
+
+# --------------------------------------------------------------------
+# Tomcat context-root redirect — required for Nuxeo CSRF token fetch
+#
+# Nuxeo documents the CSRF token fetch handshake as `GET /nuxeo` with the
+# request header `CSRF-Token: fetch`
+# (see doc.nuxeo.com — upgrade-from-lts-2017 §CSRF Protection). By default,
+# Tomcat's Mapper answers `GET /nuxeo` (context root, no trailing slash)
+# with a 302 redirect to `/nuxeo/` BEFORE the webapp filter chain runs, so
+# NuxeoCorsCsrfFilter never observes the fetch request and no token is
+# emitted. Disabling `mapperContextRootRedirectEnabled` on the Nuxeo
+# `<Context>` lets the filter see the request and return the token exactly
+# as the documentation prescribes. This is a plumbing fix — it does not
+# disable any security check.
+# --------------------------------------------------------------------
+RUN set -eu; \
+    F=/opt/nuxeo/server/templates/common-base/conf/Catalina/localhost/nuxeo.xml.nxftl; \
+    grep -q 'mapperContextRootRedirectEnabled' "$F" || \
+      sed -i 's|<Context antiResourceLocking="false" privileged="true"|<Context mapperContextRootRedirectEnabled="false" antiResourceLocking="false" privileged="true"|' "$F"; \
+    grep mapperContextRootRedirectEnabled "$F"
+
+USER 900
+
+# The Nuxeo base image runs as user 900 (nuxeo). Copy in the addon ZIP
+# built by `mvn -DskipTests package`. Only this one file is copied; the
+# Nuxeo source checkout must NEVER be part of this build context.
+COPY --chown=900:0 mam-package/target/mam-package-1.0.0-SNAPSHOT.zip \
+    /home/nuxeo/local-packages/mam-package.zip
+
+# Install the local package offline (no Nuxeo Connect round-trip).
+# `install-packages.sh` is provided by the base image (see
+# nuxeo/docker/nuxeo/rootfs/install-packages.sh in the source checkout).
+RUN /install-packages.sh --offline /home/nuxeo/local-packages/mam-package.zip
+
+# ENTRYPOINT, CMD, EXPOSE, VOLUMEs, HEALTHCHECK, and USER are all
+# inherited from the base image. Do NOT override them here.

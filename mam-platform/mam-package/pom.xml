@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.mam.platform</groupId>
+    <artifactId>mam-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>mam-package</artifactId>
+  <packaging>zip</packaging>
+
+  <name>MAM Platform :: Nuxeo Package</name>
+  <description>
+    Installable Nuxeo addon ZIP that ships the MAM bundles.
+    Assembled via Nuxeo's ant-assembly-maven-plugin using a project-owned
+    assembly script (no dependency on nuxeo-nxr-server or the Nuxeo internal
+    package-diff assembly).
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.mam.platform</groupId>
+      <artifactId>mam-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.mam.platform</groupId>
+      <artifactId>mam-security</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.mam.platform</groupId>
+      <artifactId>mam-workflow</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.nuxeo.build</groupId>
+        <artifactId>ant-assembly-maven-plugin</artifactId>
+        <configuration>
+          <buildFiles>
+            <buildFile>${project.basedir}/src/main/assemble/assembly.xml</buildFile>
+          </buildFiles>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

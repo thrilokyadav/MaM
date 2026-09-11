@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document repository="default" id="NodeEditorial">
+  <system>
+    <type>RouteNode</type>
+    <path>MAM_EDITORIAL_APPROVAL/NodeEditorial</path>
+    <lifecycle-state>validated</lifecycle-state>
+    <lifecycle-policy>documentRouteElement</lifecycle-policy>
+    <access-control/>
+  </system>
+  <schema xmlns:common="http://www.nuxeo.org/ecm/schemas/common/" name="common"></schema>
+  <schema xmlns:dc="http://www.nuxeo.org/ecm/schemas/dublincore/" name="dublincore">
+    <dc:title><![CDATA[Editorial Approval]]></dc:title>
+    <dc:description><![CDATA[Editorial decision. Approve completes the route; Reject ends it as rejected.]]></dc:description>
+  </schema>
+  <schema xmlns:rnode="http://www.nuxeo.org/ecm/schemas/route_node/" name="route_node">
+    <rnode:nodeId><![CDATA[NodeEditorial]]></rnode:nodeId>
+    <rnode:start><![CDATA[false]]></rnode:start>
+    <rnode:stop><![CDATA[false]]></rnode:stop>
+    <rnode:hasTask><![CDATA[true]]></rnode:hasTask>
+    <rnode:hasMultipleTasks><![CDATA[false]]></rnode:hasMultipleTasks>
+    <rnode:taskDocType><![CDATA[TaskDoc]]></rnode:taskDocType>
+    <rnode:taskDirective><![CDATA[Editorial approval decision]]></rnode:taskDirective>
+    <!-- Group identifier, not a username. `mam-editors` is the same
+         group used by NodeQC; refined role separation is deferred
+         to when a dedicated QC role emerges. -->
+    <rnode:taskAssigneesExpr><![CDATA["mam-editors"]]></rnode:taskAssigneesExpr>
+    <rnode:taskAssigneesPermission><![CDATA[ReadWrite]]></rnode:taskAssigneesPermission>
+    <rnode:taskDueDateExpr><![CDATA[CurrentDate.days(5)]]></rnode:taskDueDateExpr>
+    <rnode:allowTaskReassignment><![CDATA[false]]></rnode:allowTaskReassignment>
+    <rnode:inputChain><![CDATA[]]></rnode:inputChain>
+    <rnode:outputChain><![CDATA[]]></rnode:outputChain>
+    <rnode:executeOnlyFirstTransition><![CDATA[true]]></rnode:executeOnlyFirstTransition>
+    <rnode:taskButtons>
+      <button>
+        <name><![CDATA[approve]]></name>
+        <label><![CDATA[Approve]]></label>
+        <filter><![CDATA[]]></filter>
+        <validate><![CDATA[true]]></validate>
+      </button>
+      <button>
+        <name><![CDATA[reject]]></name>
+        <label><![CDATA[Reject]]></label>
+        <filter><![CDATA[]]></filter>
+        <validate><![CDATA[true]]></validate>
+      </button>
+    </rnode:taskButtons>
+    <rnode:transitions>
+      <transition>
+        <name><![CDATA[editorial_approve]]></name>
+        <label><![CDATA[Approve]]></label>
+        <condition><![CDATA[NodeVariables["button"] == "approve"]]></condition>
+        <chain><![CDATA[]]></chain>
+        <targetId><![CDATA[NodeApproved]]></targetId>
+      </transition>
+      <transition>
+        <name><![CDATA[editorial_reject]]></name>
+        <label><![CDATA[Reject]]></label>
+        <condition><![CDATA[NodeVariables["button"] == "reject"]]></condition>
+        <chain><![CDATA[]]></chain>
+        <targetId><![CDATA[NodeRejected]]></targetId>
+      </transition>
+    </rnode:transitions>
+    <rnode:escalationRules/>
+  </schema>
+</document>

@@ -1,0 +1,50 @@
+# Maven
+target/
+**/target/
+*.log
+
+# IDE - IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# IDE - Eclipse
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated/
+bin/
+
+# IDE - VS Code
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local Nuxeo runtime data (never commit runtime state)
+nxserver/data/
+nxserver/logs/
+nuxeo-tmp/
+nuxeo.conf.local
+
+# Smoke harness — never commit the real env file or collected logs
+.env.smoke
+.env.integration
+scripts/logs/
+logs/
+
+# Vendored Nuxeo marketplace package (ES/OpenSearch search client).
+# Built from the D:\MaM\nuxeo source checkout (never modified) via:
+#   mvn -Pdistrib -pl packages/nuxeo-search-client-opensearch1-package \
+#       -am -DskipTests install
+# then copied from
+#   nuxeo/packages/nuxeo-search-client-opensearch1-package/target/*.zip
+# Too large and build-host-specific to commit; see README's "PostgreSQL +
+# Elasticsearch integration stack" section for the full regeneration
+# steps. Dockerfile.integration fails fast with a clear message if this
+# file is missing.
+vendor/*.zip

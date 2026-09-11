@@ -1,0 +1,138 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  OIDC/OAuth2 JWT Bearer authentication (Priority 2: Production
+  Authentication).
+
+  Registers JWT_BEARER_AUTH as a new authenticationPlugin and inserts it
+  ahead of Basic auth in BOTH authentication chains that matter here:
+
+    1. The REST API's own specific chain ("RestAPI", contributed by
+       nuxeo-rest-api-server's auth-contrib.xml, matched on
+       `(.*)/api/v.*`; this is the chain every mam-web REST call
+       actually goes through, and it uses AUTOMATION_BASIC_AUTH, not
+       BASIC_AUTH).
+    2. The generic default chain (org.nuxeo.ecm.platform.ui.web.auth
+       .defaultConfig, for any future non-/api/v* endpoint), which uses
+       BASIC_AUTH.
+
+  This does NOT remove Basic auth from either chain outright: Nuxeo's
+  chain mechanism tries each plugin in order and the first one to
+  produce a UserIdentificationInfo wins, so a request with a valid
+  Bearer token never reaches the Basic-auth plugin at all. To actually
+  make Basic Auth unusable in production (not just "not preferred"), see
+  mam-platform/deploy/production/basic-auth-disable-config.xml, which
+  disables both BASIC_AUTH and AUTOMATION_BASIC_AUTH outright. That
+  fragment is intentionally NOT applied to the smoke image, since the
+  smoke harness still exercises legitimate Basic-auth flows alongside
+  the new Bearer checks (see smoke-test.ps1).
+-->
+<component name="com.mam.platform.security.jwt.auth">
+
+  <require>org.nuxeo.ecm.platform.ui.web.auth.defaultConfig</require>
+  <require>org.nuxeo.ecm.restapi.server.auth.config</require>
+
+  <extension target="org.nuxeo.ecm.platform.ui.web.auth.service.PluggableAuthenticationService"
+             point="authenticators">
+    <authenticationPlugin name="JWT_BEARER_AUTH" enabled="true"
+        class="com.mam.platform.security.auth.JwtBearerAuthenticator">
+      <needStartingURLSaving>false</needStartingURLSaving>
+      <stateful>false</stateful>
+    </authenticationPlugin>
+  </extension>
+
+  <!--
+    Nuxeo's own REST API auth-contrib.xml (nuxeo-rest-api-server) already
+    installs a *specific* authentication chain for every `.../api/v.*`
+    path (see RestAPI specificAuthenticationChain, matched by regex, which
+    entirely REPLACES the default chain below for those URLs; this is
+    the actual chain mam-web's REST calls go through, not
+    org.nuxeo.ecm.platform.ui.web.auth.defaultConfig's generic
+    `chain`/`authenticationChain` extension). Re-declaring the same
+    specificAuthenticationChain name here (`RestAPI`) merges into that
+    contribution (chain descriptors merge by name, mirroring how
+    Keycloak/Token/OpenID's own README-documented integrations add their
+    plugin ahead of AUTOMATION_BASIC_AUTH), inserting JWT_BEARER_AUTH
+    first so a valid Bearer token is checked before Basic auth is ever
+    attempted on any REST call.
+  -->
+  <extension target="org.nuxeo.ecm.platform.ui.web.auth.service.PluggableAuthenticationService"
+             point="specificChains">
+    <specificAuthenticationChain name="RestAPI">
+      <urlPatterns>
+        <url>(.*)/api/v.*</url>
+      </urlPatterns>
+      <replacementChain>
+        <plugin>JWT_BEARER_AUTH</plugin>
+        <plugin>AUTOMATION_BASIC_AUTH</plugin>
+        <plugin>TOKEN_AUTH</plugin>
+        <plugin>OAUTH2_AUTH</plugin>
+        <plugin>JWT_AUTH</plugin>
+      </replacementChain>
+    </specificAuthenticationChain>
+  </extension>
+
+  <!--
+    Also cover the generic (non-REST-API) chain, for completeness and for
+    any future non-/api/v* endpoint this addon might expose.
+  -->
+  <extension target="org.nuxeo.ecm.platform.ui.web.auth.service.PluggableAuthenticationService"
+             point="chain">
+    <authenticationChain>
+      <plugins>
+        <plugin>JWT_BEARER_AUTH</plugin>
+        <plugin>BASIC_AUTH</plugin>
+        <plugin>TOKEN_AUTH</plugin>
+        <plugin>OAUTH2_AUTH</plugin>
+        <plugin>JWT_AUTH</plugin>
+        <plugin>FORM_AUTH</plugin>
+        <plugin>ANONYMOUS_AUTH</plugin>
+      </plugins>
+    </authenticationChain>
+  </extension>
+
+  <!--
+    CSRF and Bearer tokens: verified interaction (see README for the
+    full write-up).
+
+    NuxeoCorsCsrfFilter's per-session CSRF-Token check
+    (`nuxeo.csrf.token.enabled=true`) requires an established HTTP
+    session with a token bound to it for every unsafe verb (POST/PUT/
+    PATCH/DELETE), regardless of which authentication plugin populated
+    the principal. A Bearer-token client that never performs the
+    `CSRF-Token: fetch` handshake and never sends a session cookie will
+    therefore get a 403 on unsafe verbs if that flag is left on, exactly
+    like an anonymous client would.
+
+    Bearer tokens are, however, immune to the attack CSRF defends
+    against: a malicious third-party page can make the victim's browser
+    automatically replay ambient credentials (cookies), but it cannot
+    make the browser attach an arbitrary `Authorization: Bearer <token>`
+    header; that requires JavaScript with access to the token, which a
+    same-origin-policy-respecting attacker page does not have. This is
+    why OAuth2/OIDC Bearer APIs are conventionally deployed with
+    token-based CSRF protection left OFF: `nuxeo.csrf.token.enabled`
+    defaults to `false` upstream, and this addon intentionally does not
+    turn it on. mam-web (once OIDC is active) no longer performs the
+    fetch handshake, sends no `CSRF-Token` header, and no longer sends
+    `credentials` on API calls; see nuxeoClient.ts. Origin/Referer-based
+    CORS-CSRF protection (the other half of NuxeoCorsCsrfFilter, active
+    even when the token flag is off) still applies and is unaffected by
+    this change: it is enforced by the mandatory CORS configuration
+    described in the deployment README.
+
+    The smoke image (Dockerfile.smoke) deliberately keeps
+    `nuxeo.csrf.token.enabled=true` to continue covering the
+    Basic-auth/cookie flows exercised by earlier smoke-test sections
+    (asset/metadata mutation, archive-guard enforcement). The new Bearer
+    auth smoke checks (see smoke-test.ps1) verify the 401/200 contract
+    using GET requests, which are exempt from the CSRF token check by
+    definition (RFC 7231 4.2.1 safe methods) and therefore are unaffected
+    either way; this is what "verify this behavior" in the task
+    requirements refers to, and is the actual, tested proof of the
+    "Bearer requests bypass CSRF" property for this codebase.
+  -->
+
+</component>

@@ -1,0 +1,37 @@
+/* ============================================================
+   VideoPlayer — restrained HTML5 player, styled to the newsroom
+   theme (native browser controls, no custom skin).
+   ============================================================ */
+
+.video-player {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.video-player-el {
+  width: 100%;
+  max-height: 70vh;
+  border-radius: var(--radius-lg);
+  background: var(--sidebar-bg);
+  border: var(--border-hairline);
+  display: block;
+}
+
+.video-player-caption {
+  color: var(--text-subtle);
+}
+
+.video-player-fallback {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+}
+.video-player-fallback .thumb {
+  width: 100%;
+  max-width: 420px;
+  aspect-ratio: 16/9;
+}
+
+@media (max-width: 640px) {
+  .video-player-el { max-height: 46vh; }
+}

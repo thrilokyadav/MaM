@@ -1,0 +1,71 @@
+.thumb {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.thumb-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255,255,255,0.08), transparent 50%),
+    radial-gradient(circle at 70% 70%, rgba(107,125,255,0.24), transparent 55%),
+    var(--sidebar-bg);
+  color: var(--sidebar-text-strong);
+}
+.thumb-fallback-mono {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  font-size: 20px;
+  letter-spacing: 0.06em;
+}
+.thumb-fallback-type {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: rgba(255,255,255,0.12);
+}
+.thumb-fallback-type svg { width: 14px; height: 14px; }
+
+.thumb-lg .thumb-fallback-mono { font-size: 46px; }
+.thumb-lg .thumb-fallback-type {
+  top: var(--space-4);
+  right: var(--space-4);
+  bottom: auto;
+  width: 32px;
+  height: 32px;
+}
+.thumb-lg .thumb-fallback-type svg { width: 18px; height: 18px; }
+.thumb-lg .thumb-fallback-video .thumb-fallback-icon { width: 40px; height: 40px; }
+.thumb-lg .thumb-fallback-label { font-size: 12px; }
+
+.thumb-fallback-video {
+  flex-direction: column;
+  gap: 6px;
+}
+.thumb-fallback-video .thumb-fallback-icon {
+  width: 26px;
+  height: 26px;
+  opacity: 0.85;
+}
+.thumb-fallback-label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sidebar-text-muted);
+}

@@ -1,0 +1,7 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 1
+Bundle-Name: MAM Platform Security
+Bundle-SymbolicName: com.mam.platform.security;singleton:=true
+Bundle-Vendor: MAM Platform
+Nuxeo-Component: OSGI-INF/mam-security-contrib.xml,
+ OSGI-INF/mam-jwt-auth-contrib.xml

@@ -1,0 +1,304 @@
+# syntax=docker/dockerfile:1
+#
+# (C) Copyright 2026 MAM Platform. All rights reserved.
+# Proprietary and confidential.
+#
+# Disposable integration-test image: same base as Dockerfile.smoke, plus
+# PostgreSQL 16 + Elasticsearch 8.x wiring and the ES/OpenSearch search
+# client package, so the MAM_BROADCAST_ASSET_SEARCH page provider can be
+# verified against a real full-text/faceted search backend (H2, used by
+# Dockerfile.smoke, has no fulltext search support at all). Never
+# reference credentials, cloud endpoints, or production hostnames from
+# this file.
+
+ARG NUXEO_IMAGE=nuxeo/nuxeo:2025.x
+FROM ${NUXEO_IMAGE}
+
+# Normalise line endings in shell scripts (same fixup as Dockerfile.smoke;
+# the local base image was built on Windows).
+USER 0
+RUN set -eu; \
+    for f in /install-packages.sh /docker-entrypoint.sh /nuxeo-run-dev.sh \
+             /opt/nuxeo/server/bin/nuxeoctl; do \
+      if [ -f "$f" ]; then sed -i 's/\r$//' "$f"; fi; \
+    done; \
+    find /docker-entrypoint-initnuxeo.d -type f -name '*.sh' \
+         -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+
+# --------------------------------------------------------------------
+# FFmpeg / ffprobe -- identical to Dockerfile.smoke, needed by the same
+# BroadcastVideo transcode pipeline this stack also exercises.
+# --------------------------------------------------------------------
+RUN set -eu; \
+    dnf -y install dnf-plugins-core; \
+    dnf config-manager --set-enabled ol9_codeready_builder; \
+    dnf -y install --nogpgcheck \
+        https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm; \
+    dnf -y install ffmpeg ffmpeg-libs; \
+    dnf clean all; \
+    rm -rf /var/cache/dnf; \
+    ffmpeg -version | head -1; \
+    ffprobe -version | head -1
+
+# --------------------------------------------------------------------
+# CSRF token enforcement is intentionally NOT enabled in this image.
+# This stack exists solely to verify PostgreSQL/Elasticsearch-backed
+# search (full-text, faceted aggregations) -- CSRF protection is already
+# verified end-to-end by the H2-backed smoke stack (see
+# Dockerfile.smoke / scripts/smoke-test.ps1, which performs the full
+# CSRF-Token fetch/retry handshake). Keeping it off here means
+# scripts/integration-test.ps1 can issue plain REST calls without
+# needing to duplicate that handshake logic, keeping this script focused
+# on its actual job.
+# --------------------------------------------------------------------
+
+# --------------------------------------------------------------------
+# JWT Bearer authentication (smoke-only configuration) -- identical
+# rationale to Dockerfile.smoke; this stack also exercises JWT auth so
+# Priority 2 and Priority 3 verifications can run against the same
+# image if desired.
+# --------------------------------------------------------------------
+ARG MAM_SMOKE_JWT_SECRET
+RUN set -eu; \
+    if [ -z "${MAM_SMOKE_JWT_SECRET:-}" ]; then \
+      echo "MAM_SMOKE_JWT_SECRET build arg is required" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /opt/nuxeo/server/nxserver/config; \
+    cat > /opt/nuxeo/server/nxserver/config/mam-jwt-smoke-config.xml <<EOF
+<?xml version="1.0"?>
+<component name="mam.jwt.smoke.config">
+  <extension target="org.nuxeo.runtime.ConfigurationService" point="configuration">
+    <property name="mam.jwt.hmac.secret">${MAM_SMOKE_JWT_SECRET}</property>
+    <property name="mam.jwt.issuer">mam-smoke-harness</property>
+    <property name="mam.jwt.audience">mam-platform</property>
+    <property name="mam.jwt.groups.claim">groups</property>
+    <property name="mam.jwt.group.map.mam-producers">mam-producers</property>
+    <property name="mam.jwt.group.map.mam-editors">mam-editors</property>
+    <property name="mam.jwt.group.map.mam-archivists">mam-archivists</property>
+    <property name="mam.jwt.group.map.administrators">administrators</property>
+  </extension>
+</component>
+EOF
+RUN chown -R 900:0 /opt/nuxeo/server/nxserver/config
+
+# --------------------------------------------------------------------
+# Tomcat context-root redirect -- identical rationale to Dockerfile.smoke.
+# --------------------------------------------------------------------
+RUN set -eu; \
+    F=/opt/nuxeo/server/templates/common-base/conf/Catalina/localhost/nuxeo.xml.nxftl; \
+    grep -q 'mapperContextRootRedirectEnabled' "$F" || \
+      sed -i 's|<Context antiResourceLocking="false" privileged="true"|<Context mapperContextRootRedirectEnabled="false" antiResourceLocking="false" privileged="true"|' "$F"; \
+    grep mapperContextRootRedirectEnabled "$F"
+
+# --------------------------------------------------------------------
+# PostgreSQL 16 JDBC configuration.
+#
+# IMPORTANT: nuxeo.db.* are launcher/template-generation-time properties
+# (see org.nuxeo.launcher.config.ConfigurationConstants.PARAM_TEMPLATE_DBTYPE),
+# resolved by ConfigurationGenerator while producing the repository JDBC
+# templates -- this happens BEFORE the OSGi runtime and
+# ConfigurationService even start, so (unlike the CSRF/JWT/Elasticsearch
+# settings elsewhere in this file) they can NOT be supplied via a
+# ConfigurationService XML extension. They must live in nuxeo.conf
+# itself. The base image ships a `postgresql` nuxeo.conf template (see
+# ${NUXEO_HOME}/templates/postgresql/nuxeo.defaults) that already knows
+# the driver/xadatasource class names once `nuxeo.templates` includes
+# `postgresql`; the init script below sets that plus the actual
+# connection parameters for the `postgres` compose service.
+# --------------------------------------------------------------------
+ARG PG_DB
+ARG PG_USER
+ARG PG_PASSWORD
+RUN set -eu; \
+    if [ -z "${PG_DB:-}" ] || [ -z "${PG_USER:-}" ] || [ -z "${PG_PASSWORD:-}" ]; then \
+      echo "PG_DB, PG_USER and PG_PASSWORD build args are required" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /docker-entrypoint-initnuxeo.d; \
+    cat > /docker-entrypoint-initnuxeo.d/10-mam-postgresql.sh <<EOF
+#!/bin/bash
+# Runs on every container start (docker-entrypoint.sh sources every *.sh
+# under /docker-entrypoint-initnuxeo.d/), but nuxeo.conf itself is only
+# (re)generated once (docker-entrypoint.sh's "if [ ! -f \$NUXEO_HOME/configured ]"
+# guard) so this is idempotent: skip if already applied.
+set -eu
+if ! grep -q '^nuxeo.db.host=' "\$NUXEO_CONF" 2>/dev/null; then
+  {
+    echo ""
+    echo "## MAM integration: PostgreSQL 16 (compose.integration.yaml)"
+    echo "nuxeo.db.host=postgres"
+    echo "nuxeo.db.port=5432"
+    echo "nuxeo.db.name=${PG_DB}"
+    echo "nuxeo.db.user=${PG_USER}"
+    echo "nuxeo.db.password=${PG_PASSWORD}"
+  } >> "\$NUXEO_CONF"
+  # nuxeo-search-client-opensearch1-package's install.xml carries a
+  # <config addtemplate="opensearch1-search-client" /> directive, but
+  # that only takes effect when install-packages.sh runs against an
+  # ALREADY-EXISTING nuxeo.conf via the live config generator. At image
+  # BUILD time (this Dockerfile's RUN /install-packages.sh step) no
+  # nuxeo.conf exists yet -- docker-entrypoint.sh only moves the
+  # bundled bin/nuxeo.conf into place on the container's first boot --
+  # so that directive is a silent no-op here, and the template must be
+  # added explicitly ourselves, alongside postgresql, once nuxeo.conf
+  # actually exists (i.e. from this init script).
+  echo "nuxeo.templates=default,opensearch1-search-client,postgresql" >> "\$NUXEO_CONF"
+fi
+EOF
+RUN chmod +x /docker-entrypoint-initnuxeo.d/10-mam-postgresql.sh; \
+    chown 900:0 /docker-entrypoint-initnuxeo.d/10-mam-postgresql.sh
+
+# --------------------------------------------------------------------
+# Elasticsearch 8.x search-client configuration.
+#
+# nuxeo-search-client-opensearch1 (vendored below) resolves its REST
+# client server list, index name, and shard/replica settings from the
+# elasticsearch.* properties -- but, like nuxeo.db.*, these are template
+# substitution properties consumed by the package's own nuxeo.defaults
+# (`nuxeo.search.client.default.opensearch1.client.server=${elasticsearch
+# .addressList:=...}`) at config-GENERATION time, not ConfigurationService
+# runtime properties. They must live in nuxeo.conf, appended by the same
+# init script as the PostgreSQL settings above (idempotency guard
+# shared via the same "already configured" marker).
+# --------------------------------------------------------------------
+ARG ES_INDEX_NAME
+RUN set -eu; \
+    if [ -z "${ES_INDEX_NAME:-}" ]; then \
+      echo "ES_INDEX_NAME build arg is required" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /docker-entrypoint-initnuxeo.d; \
+    cat > /docker-entrypoint-initnuxeo.d/11-mam-elasticsearch.sh <<EOF
+#!/bin/bash
+set -eu
+if ! grep -q '^elasticsearch.addressList=' "\$NUXEO_CONF" 2>/dev/null; then
+  {
+    echo ""
+    echo "## MAM integration: Elasticsearch 8.x (compose.integration.yaml)"
+    echo "elasticsearch.addressList=http://elasticsearch:9200"
+    echo "elasticsearch.indexName=${ES_INDEX_NAME}"
+    echo "elasticsearch.indexNumberOfShards=1"
+    echo "elasticsearch.indexNumberOfReplicas=0"
+  } >> "\$NUXEO_CONF"
+fi
+EOF
+RUN chmod +x /docker-entrypoint-initnuxeo.d/11-mam-elasticsearch.sh; \
+    chown 900:0 /docker-entrypoint-initnuxeo.d/11-mam-elasticsearch.sh
+
+# --------------------------------------------------------------------
+# S3 (MinIO) binary storage configuration.
+#
+# Like nuxeo.db.* and elasticsearch.*, nuxeo.s3storage.* / nuxeo.core.binarymanager
+# are consumed by the nuxeo-amazon-s3-package's own nuxeo.defaults template
+# substitution (see packages/nuxeo-amazon-s3-package/src/main/resources/install/
+# templates/s3binaries/nuxserver/config/s3-config.xml.nxftl in the D:\MaM\nuxeo
+# checkout) at config-GENERATION time, not ConfigurationService runtime -- so
+# they must live in nuxeo.conf itself, appended by the same idempotent init
+# script pattern used for PostgreSQL/Elasticsearch above.
+#
+# MinIO is fully S3-API-compatible, so no MAM/Nuxeo code changes are needed:
+# only nuxeo.conf properties pointing the stock S3BlobProvider at MinIO's
+# endpoint with path-style access (required because MinIO -- unlike real S3 --
+# does not do virtual-hosted-style bucket resolution via DNS).
+# --------------------------------------------------------------------
+ARG MINIO_ROOT_USER
+ARG MINIO_ROOT_PASSWORD
+ARG MAM_S3_BUCKET
+ARG MAM_S3_COLD_BUCKET
+RUN set -eu; \
+    if [ -z "${MINIO_ROOT_USER:-}" ] || [ -z "${MINIO_ROOT_PASSWORD:-}" ] || [ -z "${MAM_S3_BUCKET:-}" ]; then \
+      echo "MINIO_ROOT_USER, MINIO_ROOT_PASSWORD and MAM_S3_BUCKET build args are required" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /docker-entrypoint-initnuxeo.d; \
+    cat > /docker-entrypoint-initnuxeo.d/12-mam-s3.sh <<EOF
+#!/bin/bash
+set -eu
+if ! grep -q '^nuxeo.s3storage.bucket=' "\$NUXEO_CONF" 2>/dev/null; then
+  {
+    echo ""
+    echo "## MAM integration: S3-compatible object storage via MinIO (compose.integration.yaml)"
+    echo "nuxeo.core.binarymanager=org.nuxeo.ecm.blob.s3.S3BlobProvider"
+    echo "nuxeo.s3storage.bucket=${MAM_S3_BUCKET}"
+    echo "nuxeo.s3storage.awsid=${MINIO_ROOT_USER}"
+    echo "nuxeo.s3storage.awssecret=${MINIO_ROOT_PASSWORD}"
+    echo "nuxeo.s3storage.region=us-east-1"
+    echo "nuxeo.s3storage.endpoint=http://minio:9000"
+    echo "nuxeo.s3storage.pathstyleaccess=true"
+    echo ""
+    echo "## MAM integration: Cold Storage configuration (Priority 5), pointing"
+    echo "## at a SEPARATE MinIO bucket used to stand in for AWS Glacier/S3"
+    echo "## Cold in production. These properties match the nuxeo-coldstorage"
+    echo "## addon's own nuxeo.defaults (see"
+    echo "## https://github.com/nuxeo/nuxeo-coldstorage#configuration-properties)."
+    echo "## NOTE: the nuxeo-coldstorage marketplace package itself is NOT"
+    echo "## installed by this Dockerfile -- it lives in a separate repository"
+    echo "## (github.com/nuxeo/nuxeo-coldstorage) outside the D:\\MaM\\nuxeo"
+    echo "## checkout this project vendors packages from, and requires a"
+    echo "## private @nuxeo npm registry to build its Web UI module. These"
+    echo "## nuxeo.conf properties are wired up so the addon activates with"
+    echo "## zero extra configuration the moment its package IS installed"
+    echo "## (e.g. by adding a COPY + install-packages.sh step once a"
+    echo "## pre-built nuxeo-coldstorage-package-*.zip is vendored the same"
+    echo "## way nuxeo-amazon-s3-package was). Until then, ecm:mixinTypes"
+    echo "## containing ColdStorage / the coldstorage:* schema fields will"
+    echo "## simply not exist and these properties are inert."
+    echo "nuxeo.coldstorage.bucket=${MAM_S3_COLD_BUCKET}"
+    echo "nuxeo.coldstorage.awsid=${MINIO_ROOT_USER}"
+    echo "nuxeo.coldstorage.awssecret=${MINIO_ROOT_PASSWORD}"
+    echo "nuxeo.coldstorage.endpoint=http://minio:9000"
+    echo "nuxeo.coldstorage.pathstyleaccess=true"
+    echo "nuxeo.coldstorage.numberOfDaysOfAvailability.value.default=0"
+  } >> "\$NUXEO_CONF"
+  # nuxeo-amazon-s3-package's own nuxeo.defaults sets
+  # nuxeo.template.includes=aws (region provider plumbing) as a side
+  # effect of activating the package's "s3binaries" template; since no
+  # nuxeo.conf exists yet at image BUILD time (same reasoning as the
+  # postgresql/opensearch1 templates above), the template list has to be
+  # set explicitly here once nuxeo.conf actually exists.
+  sed -i 's/^nuxeo.templates=default,opensearch1-search-client,postgresql\$/nuxeo.templates=default,opensearch1-search-client,postgresql,s3binaries/' "\$NUXEO_CONF"
+fi
+EOF
+RUN chmod +x /docker-entrypoint-initnuxeo.d/12-mam-s3.sh; \
+    chown 900:0 /docker-entrypoint-initnuxeo.d/12-mam-s3.sh
+
+USER 900
+
+# The vendored ES/OpenSearch search-client marketplace package. Built
+# from the D:\MaM\nuxeo source checkout (never modified in place) via:
+#   mvn -Pdistrib -pl packages/nuxeo-search-client-opensearch1-package \
+#       -am -DskipTests install
+# then copied here from that module's target/*.zip. See
+# mam-platform/vendor and the README's "PostgreSQL + Elasticsearch
+# integration stack" section for the full regeneration steps; this file
+# is gitignored (too large / build-host-specific to commit).
+COPY --chown=900:0 vendor/nuxeo-search-client-opensearch1-package-2025.21-SNAPSHOT.zip \
+    /home/nuxeo/local-packages/nuxeo-search-client-opensearch1-package.zip
+
+# The vendored Amazon S3 Online Storage marketplace package (provides
+# org.nuxeo.ecm.blob.s3.S3BlobProvider, which is NOT present in the base
+# nuxeo/nuxeo:2025.x image). Built the same read-only way as the search
+# client package above:
+#   mvn -Pdistrib -pl packages/nuxeo-amazon-s3-package -am -DskipTests install
+# then copied here from that module's target/*.zip. Also gitignored.
+COPY --chown=900:0 vendor/nuxeo-amazon-s3-package-2025.21-SNAPSHOT.zip \
+    /home/nuxeo/local-packages/nuxeo-amazon-s3-package.zip
+
+# Copy in the MAM addon ZIP built by `mvn -DskipTests package`. Only
+# these files are copied; the Nuxeo source checkout must NEVER be
+# part of this build context.
+COPY --chown=900:0 mam-package/target/mam-package-1.0.0-SNAPSHOT.zip \
+    /home/nuxeo/local-packages/mam-package.zip
+
+# Install all packages offline (no Nuxeo Connect round-trip). The search
+# client and S3 storage packages must be installed before the MAM addon
+# so their bundles and nuxeo.defaults template properties are already
+# active when mam-core's contributions start.
+RUN /install-packages.sh --offline \
+    /home/nuxeo/local-packages/nuxeo-search-client-opensearch1-package.zip \
+    /home/nuxeo/local-packages/nuxeo-amazon-s3-package.zip \
+    /home/nuxeo/local-packages/mam-package.zip
+
+# ENTRYPOINT, CMD, EXPOSE, VOLUMEs, HEALTHCHECK, and USER are all
+# inherited from the base image. Do NOT override them here.

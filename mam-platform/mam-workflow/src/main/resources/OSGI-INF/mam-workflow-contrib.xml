@@ -1,0 +1,113 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  MAM Editorial Approval workflow contribution.
+
+  Reuses Nuxeo Document Routing (stock coreQueryPageProvider free of
+  custom Java). This component contributes:
+
+    * An `ActionService` filter that lists `BroadcastAsset` and
+      `BroadcastVideo` as the routable document types. It is referenced
+      by the route model's `document_route_instance/availabilityFilter`
+      and by `canCreateInstance` in
+      `DocumentRoutingServiceImpl` when the REST/@workflow endpoint
+      starts a new instance.
+
+    * Four automation chains that write the `broadcast:editorialStatus`
+      property (`draft`, `qc`, `approved`, `rejected`). They are wired
+      into route-node `inputChain` slots and receive the workflow's
+      attached document as chain input, exactly like the stock
+      `terminateWorkflow` / `validateDocument` chains shipped by
+      `nuxeo-routing-default`.
+
+    * The `routeModelImporter` binding for the exploded route archive
+      `route-models/mam-editorial-approval.zip`, which the maven build
+      packages inside this bundle's JAR.
+-->
+<component name="com.mam.platform.workflow.editorial-approval" version="1.0">
+
+  <require>org.nuxeo.ecm.platform.routing.service</require>
+  <require>org.nuxeo.ecm.core.operation.OperationServiceComponent</require>
+  <require>org.nuxeo.ecm.platform.actions.ActionService</require>
+  <!-- Depend on the MAM permission catalog so the filter below can
+       reference `MAM_SubmitForReview` by name. -->
+  <require>com.mam.platform.security.permissions</require>
+
+  <!-- Availability filter for the MAM Editorial Approval route model.
+       Called by `DocumentRoutingServiceImpl.canCreateInstance` when
+       `POST /api/v1/workflow` is issued. The `<permission>` element
+       is honored by Nuxeo's ActionService: the ActionManager rejects
+       the rule for principals lacking `MAM_SubmitForReview` on the
+       document (checked via `session.hasPermission(doc,
+       "MAM_SubmitForReview")`), and the REST endpoint then returns
+       HTTP 400. Administrators still pass because `Everything`
+       satisfies every permission check. -->
+  <extension target="org.nuxeo.ecm.platform.actions.ActionService" point="filters">
+    <filter id="filter@MAM_EDITORIAL_APPROVAL">
+      <rule grant="true">
+        <permission>MAM_SubmitForReview</permission>
+        <type>BroadcastAsset</type>
+        <type>BroadcastVideo</type>
+        <condition>#{!currentDocument.trashed and !currentDocument.immutable}</condition>
+      </rule>
+    </filter>
+  </extension>
+
+  <!-- Status-writer chains. Each takes the attached document as input,
+       sets a single controlled string on `broadcast:editorialStatus`,
+       and saves. `Context.FetchDocument` reloads the operation input
+       from the running context (routing sets it up before invoking the
+       node chain), matching the pattern used by `validateDocument` and
+       `terminateWorkflow` in nuxeo-routing-default. -->
+  <extension target="org.nuxeo.ecm.core.operation.OperationServiceComponent" point="chains">
+
+    <chain id="mam_setEditorialStatus_draft">
+      <operation id="Context.FetchDocument"/>
+      <operation id="Document.SetProperty">
+        <param type="string" name="xpath">broadcast:editorialStatus</param>
+        <param type="serializable" name="value">draft</param>
+        <param type="boolean" name="save">true</param>
+      </operation>
+    </chain>
+
+    <chain id="mam_setEditorialStatus_qc">
+      <operation id="Context.FetchDocument"/>
+      <operation id="Document.SetProperty">
+        <param type="string" name="xpath">broadcast:editorialStatus</param>
+        <param type="serializable" name="value">qc</param>
+        <param type="boolean" name="save">true</param>
+      </operation>
+    </chain>
+
+    <chain id="mam_setEditorialStatus_approved">
+      <operation id="Context.FetchDocument"/>
+      <operation id="Document.SetProperty">
+        <param type="string" name="xpath">broadcast:editorialStatus</param>
+        <param type="serializable" name="value">approved</param>
+        <param type="boolean" name="save">true</param>
+      </operation>
+    </chain>
+
+    <chain id="mam_setEditorialStatus_rejected">
+      <operation id="Context.FetchDocument"/>
+      <operation id="Document.SetProperty">
+        <param type="string" name="xpath">broadcast:editorialStatus</param>
+        <param type="serializable" name="value">rejected</param>
+        <param type="boolean" name="save">true</param>
+      </operation>
+    </chain>
+
+  </extension>
+
+  <!-- Import the route model archive at repository initialization.
+       Same extension point (routeModelImporter) used by
+       nuxeo-routing-default to ship SerialDocumentReview and
+       ParallelDocumentReview. -->
+  <extension target="org.nuxeo.ecm.platform.routing.service" point="routeModelImporter">
+    <template-resource id="MAM_EDITORIAL_APPROVAL"
+                       path="route-models/mam-editorial-approval.zip" />
+  </extension>
+
+</component>

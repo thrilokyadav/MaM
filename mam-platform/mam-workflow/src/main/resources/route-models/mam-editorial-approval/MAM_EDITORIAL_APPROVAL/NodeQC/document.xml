@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document repository="default" id="NodeQC">
+  <system>
+    <type>RouteNode</type>
+    <path>MAM_EDITORIAL_APPROVAL/NodeQC</path>
+    <lifecycle-state>validated</lifecycle-state>
+    <lifecycle-policy>documentRouteElement</lifecycle-policy>
+    <access-control/>
+  </system>
+  <schema xmlns:common="http://www.nuxeo.org/ecm/schemas/common/" name="common"></schema>
+  <schema xmlns:dc="http://www.nuxeo.org/ecm/schemas/dublincore/" name="dublincore">
+    <dc:title><![CDATA[Quality Control]]></dc:title>
+    <dc:description><![CDATA[QC review. Submit forwards to Editorial Approval; Reject ends the route.]]></dc:description>
+  </schema>
+  <schema xmlns:rnode="http://www.nuxeo.org/ecm/schemas/route_node/" name="route_node">
+    <rnode:nodeId><![CDATA[NodeQC]]></rnode:nodeId>
+    <rnode:start><![CDATA[false]]></rnode:start>
+    <rnode:stop><![CDATA[false]]></rnode:stop>
+    <rnode:hasTask><![CDATA[true]]></rnode:hasTask>
+    <rnode:hasMultipleTasks><![CDATA[false]]></rnode:hasMultipleTasks>
+    <rnode:taskDocType><![CDATA[TaskDoc]]></rnode:taskDocType>
+    <rnode:taskDirective><![CDATA[Perform Quality Control review]]></rnode:taskDirective>
+    <!-- Group identifier, not a username. Members of `mam-editors`
+         (an IdP-managed group; not provisioned by this addon) are
+         the task actors. Administrator still passes via Everything. -->
+    <rnode:taskAssigneesExpr><![CDATA["mam-editors"]]></rnode:taskAssigneesExpr>
+    <rnode:taskAssigneesPermission><![CDATA[ReadWrite]]></rnode:taskAssigneesPermission>
+    <rnode:taskDueDateExpr><![CDATA[CurrentDate.days(5)]]></rnode:taskDueDateExpr>
+    <rnode:allowTaskReassignment><![CDATA[false]]></rnode:allowTaskReassignment>
+    <rnode:inputChain><![CDATA[mam_setEditorialStatus_qc]]></rnode:inputChain>
+    <rnode:outputChain><![CDATA[]]></rnode:outputChain>
+    <rnode:executeOnlyFirstTransition><![CDATA[true]]></rnode:executeOnlyFirstTransition>
+    <rnode:taskButtons>
+      <button>
+        <name><![CDATA[submit_to_editorial]]></name>
+        <label><![CDATA[Submit to Editorial Approval]]></label>
+        <filter><![CDATA[]]></filter>
+        <validate><![CDATA[true]]></validate>
+      </button>
+      <button>
+        <name><![CDATA[reject]]></name>
+        <label><![CDATA[Reject]]></label>
+        <filter><![CDATA[]]></filter>
+        <validate><![CDATA[true]]></validate>
+      </button>
+    </rnode:taskButtons>
+    <rnode:transitions>
+      <transition>
+        <name><![CDATA[qc_to_editorial]]></name>
+        <label><![CDATA[Submit to Editorial]]></label>
+        <condition><![CDATA[NodeVariables["button"] == "submit_to_editorial"]]></condition>
+        <chain><![CDATA[]]></chain>
+        <targetId><![CDATA[NodeEditorial]]></targetId>
+      </transition>
+      <transition>
+        <name><![CDATA[qc_reject]]></name>
+        <label><![CDATA[Reject]]></label>
+        <condition><![CDATA[NodeVariables["button"] == "reject"]]></condition>
+        <chain><![CDATA[]]></chain>
+        <targetId><![CDATA[NodeRejected]]></targetId>
+      </transition>
+    </rnode:transitions>
+    <rnode:escalationRules/>
+  </schema>
+</document>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document repository="default" id="NodeRejected">
+  <system>
+    <type>RouteNode</type>
+    <path>MAM_EDITORIAL_APPROVAL/NodeRejected</path>
+    <lifecycle-state>validated</lifecycle-state>
+    <lifecycle-policy>documentRouteElement</lifecycle-policy>
+    <access-control/>
+  </system>
+  <schema xmlns:common="http://www.nuxeo.org/ecm/schemas/common/" name="common"></schema>
+  <schema xmlns:dc="http://www.nuxeo.org/ecm/schemas/dublincore/" name="dublincore">
+    <dc:title><![CDATA[Rejected]]></dc:title>
+    <dc:description><![CDATA[Terminal state. broadcast:editorialStatus is set to 'rejected'.]]></dc:description>
+  </schema>
+  <schema xmlns:rnode="http://www.nuxeo.org/ecm/schemas/route_node/" name="route_node">
+    <rnode:nodeId><![CDATA[NodeRejected]]></rnode:nodeId>
+    <rnode:start><![CDATA[false]]></rnode:start>
+    <rnode:stop><![CDATA[true]]></rnode:stop>
+    <rnode:hasTask><![CDATA[false]]></rnode:hasTask>
+    <rnode:inputChain><![CDATA[mam_setEditorialStatus_rejected]]></rnode:inputChain>
+    <rnode:outputChain><![CDATA[]]></rnode:outputChain>
+    <rnode:transitions/>
+    <rnode:escalationRules/>
+  </schema>
+</document>

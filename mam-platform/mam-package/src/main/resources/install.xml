@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  Minimal install script: copies bundles shipped in this package into the
+  server's bundles directory. No template or third-party lib payload yet.
+-->
+<install>
+  <update file="${package.root}/install/bundles" todir="${env.bundles}" />
+</install>

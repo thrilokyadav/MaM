@@ -1,0 +1,37 @@
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  background: var(--status-unknown-bg);
+  color: var(--text-subtle);
+  border: 1px solid transparent;
+}
+.status-compact {
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+.status-draft            { background: var(--status-draft-bg);    color: var(--status-draft-fg); }
+.status-qc               { background: var(--status-qc-bg);       color: var(--status-qc-fg); }
+.status-approved         { background: var(--status-approved-bg); color: var(--status-approved-fg); }
+.status-rejected         { background: var(--status-rejected-bg); color: var(--status-rejected-fg); }
+.status-hot              { background: var(--status-hot-bg);      color: var(--status-hot-fg); }
+.status-warm             { background: var(--status-warm-bg);     color: var(--status-warm-fg); }
+.status-cold             { background: var(--status-cold-bg);     color: var(--status-cold-fg); }
+.status-restore-pending  { background: var(--status-cold-bg);     color: var(--status-cold-fg); }
+.status-unknown          { background: var(--status-unknown-bg);  color: var(--text-subtle); }

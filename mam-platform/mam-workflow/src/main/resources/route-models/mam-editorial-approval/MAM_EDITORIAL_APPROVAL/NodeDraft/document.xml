@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document repository="default" id="NodeDraft">
+  <system>
+    <type>RouteNode</type>
+    <path>MAM_EDITORIAL_APPROVAL/NodeDraft</path>
+    <lifecycle-state>validated</lifecycle-state>
+    <lifecycle-policy>documentRouteElement</lifecycle-policy>
+    <access-control/>
+  </system>
+  <schema xmlns:common="http://www.nuxeo.org/ecm/schemas/common/" name="common"></schema>
+  <schema xmlns:dc="http://www.nuxeo.org/ecm/schemas/dublincore/" name="dublincore">
+    <dc:title><![CDATA[Draft]]></dc:title>
+    <dc:description><![CDATA[Draft / submission. Auto-transitions to Quality Control.]]></dc:description>
+  </schema>
+  <schema xmlns:rnode="http://www.nuxeo.org/ecm/schemas/route_node/" name="route_node">
+    <rnode:nodeId><![CDATA[NodeDraft]]></rnode:nodeId>
+    <rnode:start><![CDATA[true]]></rnode:start>
+    <rnode:stop><![CDATA[false]]></rnode:stop>
+    <rnode:hasTask><![CDATA[false]]></rnode:hasTask>
+    <rnode:inputChain><![CDATA[mam_setEditorialStatus_draft]]></rnode:inputChain>
+    <rnode:outputChain><![CDATA[]]></rnode:outputChain>
+    <rnode:transitions>
+      <transition>
+        <name><![CDATA[draft_to_qc]]></name>
+        <label><![CDATA[Submit for QC]]></label>
+        <condition><![CDATA[true]]></condition>
+        <chain><![CDATA[]]></chain>
+        <targetId><![CDATA[NodeQC]]></targetId>
+      </transition>
+    </rnode:transitions>
+    <rnode:escalationRules/>
+  </schema>
+</document>

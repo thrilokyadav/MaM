@@ -1,0 +1,48 @@
+# (C) Copyright 2026 MAM Platform. All rights reserved.
+# Proprietary and confidential.
+#
+# Disposable single-node Nuxeo smoke stack. Not for production.
+# Values are supplied via .env.smoke (copy .env.smoke.example first).
+# Named volumes hold Nuxeo data/logs so the container remains stateless.
+
+services:
+  nuxeo:
+    build:
+      context: .
+      dockerfile: Dockerfile.smoke
+      args:
+        NUXEO_IMAGE: ${NUXEO_IMAGE:-nuxeo/nuxeo:2025.x}
+        # Generated fresh per smoke run by scripts/smoke-test.ps1 (never
+        # committed, never reused across runs). Baked into the image as a
+        # ConfigurationService property so JwtBearerAuthenticator's HS256
+        # fallback can verify the tokens the smoke script mints for the
+        # Bearer-auth checks. See Dockerfile.smoke for the full rationale.
+        MAM_SMOKE_JWT_SECRET: ${MAM_SMOKE_JWT_SECRET}
+    image: mam-platform/nuxeo-smoke:local
+    container_name: mam-smoke-nuxeo
+    ports:
+      - "${SMOKE_HOST_PORT:-8080}:8080"
+    environment:
+      # JVM tuning kept modest — this is a single-node smoke test, not a
+      # benchmark. Values are overridable via the .env.smoke file.
+      JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx1500m}
+    volumes:
+      - nuxeo-data:/var/lib/nuxeo
+      - nuxeo-logs:/var/log/nuxeo
+      - nuxeo-tmp:/tmp
+    healthcheck:
+      # /nuxeo/runningstatus returns 200 once the server is fully up.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/nuxeo/runningstatus"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    restart: "no"
+
+volumes:
+  nuxeo-data:
+    name: mam-smoke-nuxeo-data
+  nuxeo-logs:
+    name: mam-smoke-nuxeo-logs
+  nuxeo-tmp:
+    name: mam-smoke-nuxeo-tmp

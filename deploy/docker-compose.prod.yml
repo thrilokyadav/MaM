@@ -1,0 +1,313 @@
+# (C) Copyright 2026 MAM Platform. All rights reserved.
+# Proprietary and confidential.
+#
+# Production deployment stack for the MAM platform.
+#
+# Aligned with the Technical Architecture Document (2.3.4 Reverse Proxy,
+# 2.5.2 Hardware & Capacity Baselines, 2.9.3 Backup & DR, 2.10.1/2.10.3 JVM
+# tuning) and the Nuxeo Implementation Plan (Section 5, Deployment). This
+# is the hardened counterpart to mam-platform/compose.integration.yaml,
+# which remains a disposable local test harness and is NOT suitable for
+# production use (no TLS, throwaway credentials, single-node ES with
+# security disabled by design for test speed).
+#
+# Quick start: see README-DEPLOYMENT.md. In short:
+#   cp .env.prod.example .env
+#   # edit .env with real credentials/domain/OIDC settings
+#   # place TLS certs under nginx/certs/
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Services and their role in the Technical Architecture Document:
+#   nginx          - 2.3.4 reverse proxy / TLS termination / static SPA host
+#   nuxeo          - the MAM application server (mam-platform addon + Nuxeo)
+#   postgres       - 2.2.1 repository backend (PostgreSQL 16)
+#   elasticsearch  - 2.2.1 full-text + faceted search backend
+#   redis          - 2.2.1 caching/messaging tier (provisioned per Tech
+#                    Arch; see README-DEPLOYMENT.md "Redis" note on current
+#                    integration status)
+#   minio          - 2.4.1 S3-compatible binary storage (swap for real
+#                    AWS S3 in cloud deployments -- see README)
+
+services:
+  # ------------------------------------------------------------------
+  # Reverse proxy / TLS termination / static SPA host
+  # ------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: mam-prod-nginx
+    depends_on:
+      nuxeo:
+        condition: service_healthy
+      mam-web-build:
+        condition: service_completed_successfully
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/certbot-www:/var/www/certbot:ro
+      - mam-web-dist:/usr/share/nginx/html:ro
+      - mam-nginx-logs:/var/log/nginx
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "--no-check-certificate", "https://localhost/nuxeo/runningstatus"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # One-shot init container: builds the mam-web SPA from source and
+  # copies the static output into the mam-web-dist volume nginx serves.
+  # Runs once per `docker compose up`; nginx's depends_on above waits
+  # for it to exit successfully before starting.
+  # ------------------------------------------------------------------
+  mam-web-build:
+    image: node:20-alpine
+    container_name: mam-prod-web-build
+    working_dir: /app
+    environment:
+      VITE_NUXEO_BASE_URL: /nuxeo
+      VITE_OIDC_ISSUER: ${OIDC_ISSUER:-}
+      VITE_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      VITE_OIDC_REDIRECT_URI: ${OIDC_WEB_REDIRECT_URI:-}
+      VITE_OIDC_SILENT_REDIRECT_URI: ${OIDC_WEB_SILENT_REDIRECT_URI:-}
+      VITE_OIDC_POST_LOGOUT_REDIRECT_URI: ${OIDC_WEB_POST_LOGOUT_REDIRECT_URI:-}
+      VITE_OIDC_SCOPE: ${OIDC_WEB_SCOPE:-openid profile email groups}
+      VITE_MOCK_MODE: "false"
+    volumes:
+      - ../mam-web:/app:ro
+      - mam-web-dist:/dist-out
+      - mam-web-build-cache:/app/node_modules
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "Building mam-web SPA for production..."
+        cp -r /app /tmp/build
+        cd /tmp/build
+        npm ci
+        npm run build
+        rm -rf /dist-out/*
+        cp -r dist/* /dist-out/
+        echo "mam-web build complete."
+    restart: "no"
+
+  # ------------------------------------------------------------------
+  # Nuxeo application server
+  # ------------------------------------------------------------------
+  nuxeo:
+    build:
+      context: ../mam-platform
+      dockerfile: ../deploy/nuxeo/Dockerfile.prod
+      args:
+        NUXEO_IMAGE: ${NUXEO_IMAGE:-nuxeo/nuxeo:2025.x}
+        PG_DB: ${PG_DB:?PG_DB must be set in .env}
+        PG_USER: ${PG_USER:?PG_USER must be set in .env}
+        PG_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set in .env}
+        ES_INDEX_NAME: ${ES_INDEX_NAME:-mam_prod}
+        ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD must be set in .env}
+        MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}
+        MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
+        MAM_S3_BUCKET: ${MAM_S3_BUCKET:-mam-blobs}
+        MAM_S3_COLD_BUCKET: ${MAM_S3_COLD_BUCKET:-mam-blobs-cold}
+        MAM_JWT_ISSUER: ${OIDC_ISSUER:?OIDC_ISSUER must be set in .env}
+        MAM_JWT_AUDIENCE: ${OIDC_CLIENT_ID:?OIDC_CLIENT_ID must be set in .env}
+        MAM_JWT_JWKS_URL: ${OIDC_JWKS_URL:?OIDC_JWKS_URL must be set in .env}
+        MAM_JWT_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM:-groups}
+    image: mam-platform/nuxeo-prod:${MAM_VERSION:-latest}
+    container_name: mam-prod-nuxeo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      # Tech Arch 2.10.1: JVM heap sizing for the Nuxeo application tier
+      # under expected production load (concurrent editorial + archive
+      # traffic). Override in .env for hosts with different available RAM
+      # -- see README-DEPLOYMENT.md "Hardware & Capacity Baselines".
+      JAVA_OPTS: ${NUXEO_JVM_ARGS:--Xms4096m -Xmx8192m}
+    volumes:
+      - mam-nuxeo-data:/var/lib/nuxeo
+      - mam-nuxeo-logs:/var/log/nuxeo
+      - mam-nuxeo-tmp:/tmp
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/nuxeo/runningstatus"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+    # No host port publish here: nginx is the only public entry point.
+    # Uncomment for direct/debug access, bound to localhost only:
+    # ports:
+    #   - "127.0.0.1:8080:8080"
+
+  # ------------------------------------------------------------------
+  # PostgreSQL 16 — repository backend
+  # ------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: mam-prod-postgres
+    environment:
+      POSTGRES_DB: ${PG_DB:?PG_DB must be set in .env}
+      POSTGRES_USER: ${PG_USER:?PG_USER must be set in .env}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set in .env}
+    volumes:
+      - mam-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-mam_nuxeo} -d ${PG_DB:-mam_nuxeo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+    # No host port publish by default -- only the nuxeo/backup containers
+    # on the compose network need to reach Postgres. Uncomment for a DBA
+    # workstation connection during setup/troubleshooting only:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+  # ------------------------------------------------------------------
+  # Elasticsearch — full-text + faceted search backend
+  # ------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: mam-prod-elasticsearch
+    environment:
+      # Single-node baseline per Tech Arch 2.5.2/2.10.3 for the initial
+      # production deployment size. For HA, replace this service with a
+      # multi-node cluster (discovery.seed_hosts / cluster.initial_master_nodes)
+      # and remove discovery.type=single-node -- everything else in this
+      # compose file (the elasticsearch.addressList Nuxeo config, the
+      # backup script's snapshot repository) is written to point at
+      # whatever hostname/URL you put in ELASTICSEARCH_HOSTS, so scaling
+      # out does not require touching the Nuxeo image.
+      discovery.type: single-node
+      # xpack.security IS enabled here (unlike the disposable integration
+      # stack) -- a production ES node must not be reachable without
+      # authentication. See README-DEPLOYMENT.md for the one-time
+      # bootstrap password / API key setup this implies for Nuxeo's
+      # search-client configuration.
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD must be set in .env}
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms2g -Xmx2g}
+    volumes:
+      - mam-es-data:/usr/share/elasticsearch/data
+      - mam-es-snapshots:/usr/share/elasticsearch/snapshots
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS -u elastic:$$ELASTIC_PASSWORD http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+  # ------------------------------------------------------------------
+  # Redis — caching / messaging tier (Tech Arch 2.2.1)
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: mam-prod-redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}", "--appendonly", "yes"]
+    volumes:
+      - mam-redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # MinIO — S3-compatible binary storage (Tech Arch 2.4.1)
+  # ------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    container_name: mam-prod-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
+    volumes:
+      - mam-minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+    restart: unless-stopped
+    # MinIO's own console (9001) and API (9000) are intentionally NOT
+    # published to the host -- only Nuxeo and the backup scripts, on the
+    # compose network, need to reach it. If you need direct admin access
+    # to the MinIO console, publish 127.0.0.1-bound ports only:
+    # ports:
+    #   - "127.0.0.1:9000:9000"
+    #   - "127.0.0.1:9001:9001"
+
+  # One-shot init container: creates the mam-blobs and mam-blobs-cold
+  # buckets (MinIO does not auto-create buckets). Same mechanism as
+  # compose.integration.yaml's minio-init.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-08T15-39-49Z
+    container_name: mam-prod-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}
+      MAM_S3_BUCKET: ${MAM_S3_BUCKET:-mam-blobs}
+      MAM_S3_COLD_BUCKET: ${MAM_S3_COLD_BUCKET:-mam-blobs-cold}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$MAM_S3_BUCKET"
+        mc anonymous set none "local/$$MAM_S3_BUCKET"
+        mc mb --ignore-existing "local/$$MAM_S3_COLD_BUCKET"
+        mc anonymous set none "local/$$MAM_S3_COLD_BUCKET"
+        echo "Buckets $$MAM_S3_BUCKET and $$MAM_S3_COLD_BUCKET ready."
+    restart: "no"
+
+volumes:
+  mam-pg-data:
+    name: mam-prod-pg-data
+  mam-es-data:
+    name: mam-prod-es-data
+  mam-es-snapshots:
+    name: mam-prod-es-snapshots
+  mam-redis-data:
+    name: mam-prod-redis-data
+  mam-minio-data:
+    name: mam-prod-minio-data
+  mam-nuxeo-data:
+    name: mam-prod-nuxeo-data
+  mam-nuxeo-logs:
+    name: mam-prod-nuxeo-logs
+  mam-nuxeo-tmp:
+    name: mam-prod-nuxeo-tmp
+  mam-nginx-logs:
+    name: mam-prod-nginx-logs
+  mam-web-dist:
+    name: mam-prod-web-dist
+  mam-web-build-cache:
+    name: mam-prod-web-build-cache

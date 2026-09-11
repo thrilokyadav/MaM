@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+-->
+<package type="addon" name="mam-platform" version="@VERSION@">
+  <title>MAM Platform</title>
+  <description>
+    Media Asset Management customization layer for Nuxeo.
+    Scaffold release: ships the mam-core bundle only. No product features yet.
+  </description>
+  <vendor>MAM Platform</vendor>
+  <target-platform>
+    <name>server</name>
+    <version>2025.21-SNAPSHOT</version>
+  </target-platform>
+  <license>Proprietary - All rights reserved</license>
+</package>

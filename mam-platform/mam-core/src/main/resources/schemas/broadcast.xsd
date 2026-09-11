@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  Broadcast metadata schema for the BroadcastAsset document type.
+  Every field is a top-level element and is therefore optional at the
+  document level, per the Nuxeo schema convention (see video.xsd for
+  reference). Field semantics are documented in the project README.
+-->
+<xs:schema xmlns:nxs="http://www.mam-platform.com/ecm/schemas/broadcast"
+           xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://www.mam-platform.com/ecm/schemas/broadcast">
+
+  <xs:include schemaLocation="core-types.xsd" />
+
+  <!-- Editorial identity -->
+  <xs:element name="slug"            type="xs:string" />
+  <xs:element name="programme"       type="xs:string" />
+  <xs:element name="episode"         type="xs:string" />
+  <xs:element name="bureau"          type="xs:string" />
+  <xs:element name="storyType"       type="xs:string" />
+
+  <!-- Scheduling -->
+  <xs:element name="airDate"         type="xs:dateTime" />
+  <xs:element name="embargoUntil"    type="xs:dateTime" />
+
+  <!-- Rights -->
+  <xs:element name="rightsHolder"    type="xs:string" />
+  <xs:element name="rightsTerritory" type="xs:string" />
+  <xs:element name="rightsStart"     type="xs:dateTime" />
+  <xs:element name="rightsEnd"       type="xs:dateTime" />
+
+  <!-- Editorial and archive state (free text at this stage;
+       controlled vocabularies and lifecycle rules come later). -->
+  <xs:element name="editorialStatus" type="xs:string" />
+  <xs:element name="archiveState"    type="xs:string" />
+
+  <!-- Archive audit trail (Priority 5). Populated automatically by
+       ArchiveStateGuardListener when archiveState transitions to
+       "cold" (archiveDate/archivedBy) or "hot" (restoreDate/restoredBy);
+       never set directly by callers. All optional at the schema level,
+       per convention: a freshly created asset has none of them set
+       until its first archive/restore transition. -->
+  <xs:element name="archiveDate"     type="xs:dateTime" />
+  <xs:element name="archivedBy"      type="xs:string" />
+  <xs:element name="restoreDate"     type="xs:dateTime" />
+  <xs:element name="restoredBy"      type="xs:string" />
+
+</xs:schema>

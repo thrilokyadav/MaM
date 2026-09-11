@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential. Unauthorized copying of this file,
+  via any medium, is strictly prohibited.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.nuxeo</groupId>
+    <artifactId>nuxeo-parent</artifactId>
+    <version>2025.21-SNAPSHOT</version>
+  </parent>
+
+  <groupId>com.mam.platform</groupId>
+  <artifactId>mam-platform</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <name>MAM Platform</name>
+  <description>
+    Media Asset Management customization layer for the Nuxeo Platform.
+    Delivered as an out-of-tree Maven multi-module addon. The upstream
+    Nuxeo source checkout is never modified.
+  </description>
+
+  <licenses>
+    <license>
+      <name>Proprietary - All rights reserved</name>
+      <distribution>manual</distribution>
+      <comments>Not open source. Redistribution prohibited without written permission.</comments>
+    </license>
+  </licenses>
+
+  <modules>
+    <module>mam-core</module>
+    <module>mam-security</module>
+    <module>mam-workflow</module>
+    <module>mam-package</module>
+  </modules>
+
+  <build>
+    <plugins>
+      <!--
+        Extend Nuxeo's inherited `enforce-dependencies` execution so that
+        MAM's own SNAPSHOT modules (com.mam.platform:*) can depend on each
+        other during development, exactly like org.nuxeo:* is allowed to
+        in the Nuxeo reactor. All other RequireReleaseDeps / BannedDeps
+        rules from the Nuxeo parent remain in force. Declared in <plugins>
+        (not <pluginManagement>) so the config merge reaches the execution
+        inherited from the Nuxeo root POM.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>enforce-dependencies</id>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireReleaseDeps>
+                  <message>No Snapshots Allowed!</message>
+                  <onlyWhenRelease>false</onlyWhenRelease>
+                  <failWhenParentIsSnapshot>false</failWhenParentIsSnapshot>
+                  <excludes>
+                    <exclude>com.nuxeo*</exclude>
+                    <exclude>org.nuxeo*</exclude>
+                    <exclude>com.mam.platform*</exclude>
+                  </excludes>
+                </requireReleaseDeps>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

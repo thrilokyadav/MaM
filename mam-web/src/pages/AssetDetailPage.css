@@ -1,0 +1,120 @@
+/* ============================================================
+   Asset detail — edit mode, download, playback
+   ============================================================ */
+
+.detail-note-error {
+  color: var(--danger-hover);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-left-color: var(--danger);
+}
+
+.detail-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.edit-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-4);
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.edit-form-grid:disabled,
+.edit-form-grid[disabled] {
+  opacity: 0.7;
+}
+
+.detail-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: var(--border-hairline);
+}
+
+/* Shared with UploadPage.css's .field* / .spin, duplicated narrowly here
+   because AssetDetailPage does not import UploadPage.css. */
+.field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.field-wide { grid-column: 1 / -1; }
+.field-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  font-weight: var(--fw-semibold);
+}
+.spin {
+  width: 16px;
+  height: 16px;
+  animation: mam-detail-spin 900ms linear infinite;
+}
+@keyframes mam-detail-spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@media (max-width: 640px) {
+  .edit-form-grid { grid-template-columns: 1fr; }
+  .detail-edit-actions { flex-direction: column-reverse; }
+  .detail-edit-actions .btn { width: 100%; justify-content: center; }
+}
+
+/* ============================================================
+   Reject dialog (modal) — duplicated narrowly here for the same
+   reason as .field* above: this page doesn't import ReviewQueuePage.css.
+   ============================================================ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 24, 50, 0.35);
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  z-index: 100;
+}
+.modal-panel {
+  width: 100%;
+  max-width: 480px;
+  padding: var(--space-6);
+  display: grid;
+  gap: var(--space-4);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.modal-body-text {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+.textarea {
+  height: auto;
+  padding: var(--space-3);
+  resize: vertical;
+  line-height: 1.5;
+  font-family: inherit;
+}
+
+@media (max-width: 480px) {
+  .modal-actions { flex-direction: column-reverse; }
+  .modal-actions .btn { width: 100%; }
+}

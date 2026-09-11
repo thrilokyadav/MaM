@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document repository="default" id="NodeApproved">
+  <system>
+    <type>RouteNode</type>
+    <path>MAM_EDITORIAL_APPROVAL/NodeApproved</path>
+    <lifecycle-state>validated</lifecycle-state>
+    <lifecycle-policy>documentRouteElement</lifecycle-policy>
+    <access-control/>
+  </system>
+  <schema xmlns:common="http://www.nuxeo.org/ecm/schemas/common/" name="common"></schema>
+  <schema xmlns:dc="http://www.nuxeo.org/ecm/schemas/dublincore/" name="dublincore">
+    <dc:title><![CDATA[Approved]]></dc:title>
+    <dc:description><![CDATA[Terminal state. broadcast:editorialStatus is set to 'approved'.]]></dc:description>
+  </schema>
+  <schema xmlns:rnode="http://www.nuxeo.org/ecm/schemas/route_node/" name="route_node">
+    <rnode:nodeId><![CDATA[NodeApproved]]></rnode:nodeId>
+    <rnode:start><![CDATA[false]]></rnode:start>
+    <rnode:stop><![CDATA[true]]></rnode:stop>
+    <rnode:hasTask><![CDATA[false]]></rnode:hasTask>
+    <rnode:inputChain><![CDATA[mam_setEditorialStatus_approved]]></rnode:inputChain>
+    <rnode:outputChain><![CDATA[]]></rnode:outputChain>
+    <rnode:transitions/>
+    <rnode:escalationRules/>
+  </schema>
+</document>

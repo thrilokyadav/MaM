@@ -221,4 +221,34 @@
     </listener>
   </extension>
 
+  <!-- ============================================================
+       Cold storage physical blob mover (Priority 5, Option A).
+
+       Reacts to `documentModified`, which only fires once the save has
+       proceeded past every `beforeDocumentModification` listener without
+       one of them rejecting it, so ArchiveStateGuardListener's guard
+       (priority 10 above, on `beforeDocumentModification`) has already run
+       and authorized the change by the time this listener sees the event
+       at all; a rejected (403) archiveState change never fires
+       `documentModified` in the first place, so this listener naturally
+       never reacts to it.
+
+       async="false"/postCommit="false" is correct here even though the
+       actual blob move must not run until the enclosing transaction has
+       committed: this listener's only job is to call
+       `WorkManager#schedule(work, afterCommit=true)`, a cheap, non-blocking
+       call. It is that `afterCommit=true` flag, not this listener's own
+       sync/async setting, that defers the Work's actual execution until
+       after commit. Making the listener itself async/postCommit would just
+       add an unnecessary extra hop through the async event queue before
+       the (already deferred) Work gets scheduled.
+       ============================================================ -->
+  <extension target="org.nuxeo.ecm.core.event.EventServiceComponent" point="listener">
+    <listener name="mamColdStorageBlobMover"
+              class="com.mam.platform.security.coldstorage.ColdStorageBlobMoverListener"
+              async="false" postCommit="false" priority="5">
+      <event>documentModified</event>
+    </listener>
+  </extension>
+
 </component>

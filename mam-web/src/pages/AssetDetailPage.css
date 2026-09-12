@@ -118,3 +118,60 @@
   .modal-actions { flex-direction: column-reverse; }
   .modal-actions .btn { width: 100%; }
 }
+
+/* ============================================================
+   Cold storage / restore banners
+   ============================================================ */
+.detail-cold-banner,
+.detail-restore-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
+}
+
+.detail-cold-banner {
+  background: var(--surface-subtle, rgba(56, 189, 248, 0.06));
+  border: 1px solid var(--color-border-subtle, rgba(56, 189, 248, 0.25));
+}
+
+.detail-restore-banner {
+  background: var(--surface-subtle, rgba(234, 179, 8, 0.08));
+  border: 1px solid var(--color-border-subtle, rgba(234, 179, 8, 0.3));
+}
+
+.detail-cold-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.detail-cold-banner .detail-cold-icon {
+  color: var(--color-accent, #0284c7);
+}
+
+.detail-restore-banner .detail-cold-icon {
+  color: var(--color-warning, #d97706);
+}
+
+.detail-cold-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.detail-cold-title {
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  margin: 0;
+  color: var(--text-base);
+}
+
+.detail-cold-desc {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  line-height: var(--lh-body);
+  margin: 0;
+}

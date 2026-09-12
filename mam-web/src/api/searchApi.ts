@@ -9,6 +9,10 @@
  *
  * Empty / undefined filters are dropped by the client so the backend's
  * predicates fall through cleanly.
+ *
+ * `q` is matched case-insensitively against `dc:title`, `broadcast:slug`,
+ * `broadcast:programme`, and `broadcast:bureau` (OR'd together) by
+ * mam-core's BroadcastAssetSearchPageProvider, not just the title.
  */
 
 import { IS_MOCK_MODE, NuxeoApiError, nuxeoRequest } from './nuxeoClient';
@@ -17,6 +21,20 @@ import type { NuxeoPageProviderResult } from '../types/nuxeo';
 
 export const PROVIDER_NAME = 'MAM_BROADCAST_ASSET_SEARCH';
 export const DEFAULT_PAGE_SIZE = 20;
+
+/**
+ * Wraps a free-text query in SQL `LIKE` wildcards so it matches anywhere
+ * within the searched columns (title, slug, programme, bureau), not just
+ * an exact match. Escapes any `%`/`_` the user actually typed first so
+ * they're treated as literal characters, not wildcards of their own —
+ * otherwise a title containing a literal percent sign could silently
+ * widen the match in surprising ways.
+ */
+function likeWildcard(q: string | undefined): string | undefined {
+  if (!q) return undefined;
+  const escaped = q.replace(/[%_]/g, (c) => `\\${c}`);
+  return `%${escaped}%`;
+}
 
 /** Execute the MAM page provider. Returns the raw Nuxeo page envelope. */
 export async function searchAssets(
@@ -29,7 +47,15 @@ export async function searchAssets(
     {
       method: 'GET',
       query: {
-        q: params.q,
+        // The backend's `q` handling is a case-insensitive `LIKE` OR'd
+        // across `dc:title`/`broadcast:slug`/`broadcast:programme`/
+        // `broadcast:bureau` (see BroadcastAssetSearchPageProvider —
+        // deliberately not `FULLTEXT`, which the local H2 test database
+        // cannot run at all). Wrapping in wildcards here, not on the
+        // server, keeps the server-side contract a plain LIKE and lets
+        // any future caller of this named page provider decide its own
+        // matching semantics.
+        q: likeWildcard(params.q),
         storyType: params.storyType,
         editorialStatus: params.editorialStatus,
         archiveState: params.archiveState,

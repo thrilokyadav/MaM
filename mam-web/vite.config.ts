@@ -15,7 +15,8 @@ export default defineConfig(({ mode }) => {
   // vars", not just VITE_*, so we can also read VITE_NUXEO_PROXY_TARGET
   // without exposing it to the client bundle.
   const env = loadEnv(mode, '.', '');
-  const proxyTarget = env.VITE_NUXEO_PROXY_TARGET ?? 'http://localhost:8080';
+  // Target Nuxeo instance (reads .env.local VITE_NUXEO_PROXY_TARGET, default 8081)
+  const proxyTarget = env.VITE_NUXEO_PROXY_TARGET ?? 'http://127.0.0.1:8081';
 
   return {
     plugins: [react()],

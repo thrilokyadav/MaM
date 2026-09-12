@@ -19,49 +19,71 @@ import { useCurrentUserDisplay } from '../auth/useCurrentUserDisplay';
 import { getCurrentUser } from '../api/meApi';
 import './AppShell.css';
 
-interface NavEntry {
-  to: string;
-  label: string;
-  Icon: typeof LayoutDashboard;
-  end?: boolean;
-  /** When true, the entry only shows for administrators. */
-  adminOnly?: boolean;
+export interface UserRoles {
+  isAdministrator: boolean;
+  isProducer: boolean;
+  isEditor: boolean;
+  isArchivist: boolean;
+  isPublisher: boolean;
+  groups: string[];
 }
 
-const NAV: NavEntry[] = [
-  { to: '/',        label: 'Dashboard',    Icon: LayoutDashboard, end: true },
-  { to: '/assets',  label: 'Assets',       Icon: Film },
-  { to: '/upload',  label: 'Upload media', Icon: Upload },
-  { to: '/review',  label: 'Review queue', Icon: ClipboardCheck },
-  { to: '/archive', label: 'Archive',      Icon: Archive },
-  { to: '/users',   label: 'Manage users', Icon: UsersIcon, adminOnly: true },
-  { to: '/settings',label: 'Settings',     Icon: Settings },
-];
+export function useUserRoles(): { roles: UserRoles; loading: boolean } {
+  const [roles, setRoles] = useState<UserRoles>({
+    isAdministrator: false,
+    isProducer: false,
+    isEditor: false,
+    isArchivist: false,
+    isPublisher: false,
+    groups: [],
+  });
+  const [loading, setLoading] = useState(true);
 
-/**
- * Whether the current principal is an administrator, from `GET /me`.
- * Used only to decide whether the admin-only nav entries are shown; the
- * pages behind them re-check server-side, so this is a UX affordance, not
- * the security boundary. Undefined until the first `/me` resolves.
- */
-function useIsAdmin(): boolean {
-  const [isAdmin, setIsAdmin] = useState(false);
   useEffect(() => {
     let cancelled = false;
     getCurrentUser()
       .then((me) => {
         if (cancelled) return;
-        setIsAdmin(me.isAdministrator || (me.properties.groups ?? []).includes('administrators'));
+        const groups = me.properties.groups ?? [];
+        const isAdministrator = Boolean(me.isAdministrator || groups.includes('administrators'));
+        setRoles({
+          isAdministrator,
+          isProducer: groups.includes('mam-producers'),
+          isEditor: groups.includes('mam-editors'),
+          isArchivist: groups.includes('mam-archivists'),
+          isPublisher: groups.includes('mam-publishers'),
+          groups,
+        });
+        setLoading(false);
       })
       .catch(() => {
-        /* not signed in / unreachable — leave admin nav hidden. */
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, []);
-  return isAdmin;
+
+  return { roles, loading };
 }
+
+interface NavEntry {
+  to: string;
+  label: string;
+  Icon: typeof LayoutDashboard;
+  end?: boolean;
+  isAllowed: (roles: UserRoles) => boolean;
+}
+
+const NAV: NavEntry[] = [
+  { to: '/',        label: 'Dashboard',    Icon: LayoutDashboard, end: true, isAllowed: () => true },
+  { to: '/assets',  label: 'Assets',       Icon: Film, isAllowed: () => true },
+  { to: '/upload',  label: 'Upload media', Icon: Upload, isAllowed: (r) => r.isAdministrator || r.isProducer },
+  { to: '/review',  label: 'Review queue', Icon: ClipboardCheck, isAllowed: (r) => r.isAdministrator || r.isProducer || r.isEditor },
+  { to: '/archive', label: 'Archive',      Icon: Archive, isAllowed: (r) => r.isAdministrator || r.isArchivist },
+  { to: '/users',   label: 'Manage users', Icon: UsersIcon, isAllowed: (r) => r.isAdministrator },
+  { to: '/settings',label: 'Settings',     Icon: Settings, isAllowed: (r) => r.isAdministrator },
+];
 
 /** Titles used in the top-bar breadcrumb. Not tied to route params. */
 const ROUTE_TITLES: Array<{ match: RegExp; crumb: string; parent?: string }> = [
@@ -86,8 +108,8 @@ export function AppShell() {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const currentUser = useCurrentUserDisplay();
-  const isAdmin = useIsAdmin();
-  const navEntries = NAV.filter((n) => !n.adminOnly || isAdmin);
+  const { roles } = useUserRoles();
+  const navEntries = NAV.filter((n) => n.isAllowed(roles));
 
   // Close the mobile sidebar on route change.
   useEffect(() => {

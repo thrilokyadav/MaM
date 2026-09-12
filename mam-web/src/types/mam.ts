@@ -23,7 +23,16 @@ export interface BroadcastProperties {
   'broadcast:rightsEnd'?: string;
   'broadcast:editorialStatus'?: EditorialStatus | string;
   'broadcast:archiveState'?: ArchiveState | string;
+  /** Timestamp set by MamArchiveOperation when blob moved to cold storage. */
+  'broadcast:archiveDate'?: string;
+  /** Principal who triggered the archive (set by MamArchiveOperation). */
+  'broadcast:archivedBy'?: string;
+  /** Timestamp set by MamRestoreWork when blob restored to hot storage. */
+  'broadcast:restoreDate'?: string;
+  /** Always "system" — restore runs in a background work thread. */
+  'broadcast:restoredBy'?: string;
 }
+
 
 export interface DublinCoreProperties {
   'dc:title'?: string;

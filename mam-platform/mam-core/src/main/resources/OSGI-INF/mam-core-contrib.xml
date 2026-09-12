@@ -90,38 +90,53 @@
   <!--
     Named page provider `MAM_BROADCAST_ASSET_SEARCH`.
 
-    Uses Nuxeo's stock PageProviderService `searchServicePageProvider`
-    extension point (SearchServicePageProvider, a subclass of the plain
-    coreQueryPageProvider's CoreQueryDocumentPageProvider); no custom
-    search engine, no custom Java. This variant is required (not just
-    coreQueryPageProvider) specifically so the `aggregates` block below
-    is honored: CoreQueryDocumentPageProvider's hasAggregateSupport()
-    always returns false, while SearchServicePageProvider delegates
-    query execution AND aggregation to Nuxeo's SearchService, which
-    resolves to Elasticsearch/OpenSearch once nuxeo-search-client-opensearch1
-    is installed and configured (elasticsearch.addressList; see
-    mam-platform/Dockerfile.integration). The whereClause/predicate/
-    fixedPart/sort/pageSize XML shape is identical between the two
-    provider kinds (both extend BasePageProviderDescriptor), so this is
-    a drop-in swap.
+    Uses a small custom Java page provider,
+    com.mam.platform.core.search.BroadcastAssetSearchPageProvider, declared
+    via the `genericPageProvider` extension point instead of the stock
+    `searchServicePageProvider` one. It extends
+    org.nuxeo.ecm.platform.query.nxql.SearchServicePageProvider (a subclass
+    of the plain coreQueryPageProvider's CoreQueryDocumentPageProvider) so
+    query execution AND the `aggregates` block below still go through
+    Nuxeo's SearchService exactly as before — CoreQueryDocumentPageProvider's
+    hasAggregateSupport() always returns false, while
+    SearchServicePageProvider delegates both query execution and
+    aggregation to SearchService, which resolves to Elasticsearch/OpenSearch
+    once nuxeo-search-client-opensearch1 is installed and configured
+    (elasticsearch.addressList; see mam-platform/Dockerfile.integration),
+    and otherwise falls back to a plain NXQL query against the repository.
+    The whereClause/predicate/fixedPart/sort/pageSize/aggregates XML shape
+    below is unchanged from the stock provider (both provider kinds extend
+    BasePageProviderDescriptor) — only the search-box `q` predicate moved
+    out of this declarative whereClause and into Java code, for the reason
+    below.
 
-    The embedded H2 database used by the disposable smoke stack
-    (Dockerfile.smoke) has no fulltext search support at all
-    (org.nuxeo.ecm.core.storage.sql.jdbc.dialect.DialectH2 throws if
-    fulltext is requested), so `ecm:fulltext` queries against
-    MAM_BROADCAST_ASSET_SEARCH only succeed against the PostgreSQL +
-    Elasticsearch integration stack; this is the exact "would fail on
-    H2, proving ES is working" property the integration test asserts.
+    The `q` search box needs to match across several columns — `dc:title`,
+    `broadcast:slug`, `broadcast:programme`, `broadcast:bureau` — instead
+    of just `dc:title`. That can't be expressed declaratively:
+    NXQLQueryBuilder always joins whereClause predicates with `AND` (see
+    its own "only a one level conjunctive WHERE clause" comment), so a
+    single `<predicate parameter="..." ><field name="q"/></predicate>` can
+    bind `q` to exactly one column, never OR it across several. Java's
+    BroadcastAssetSearchPageProvider works around this the same way the
+    previous version worked around the H2 "fulltext search disabled by
+    configuraton" limitation: after the stock provider logic builds the
+    AND-joined query below (discrete filters + fixed
+    trashed/version/proxy part), the custom class appends
+    `AND (dc:title ILIKE :q OR broadcast:slug ILIKE :q OR
+    broadcast:programme ILIKE :q OR broadcast:bureau ILIKE :q)` itself, once
+    `q` is non-blank. `ILIKE` is a plain case-insensitive SQL substring
+    match supported identically by H2, PostgreSQL, and every other backend
+    Nuxeo can run on (unlike the `FULLTEXT` operator, which the embedded H2
+    database used by the disposable smoke stack cannot run at all — see
+    org.nuxeo.ecm.core.storage.sql.jdbc.dialect.DialectH2), so the search
+    box keeps working with no dependency on Elasticsearch being configured,
+    while now matching every field editors actually search by.
 
-    Predicates in a whereClause are automatically dropped when their
-    bound request parameter is null or empty, so every filter below is
-    optional. Free-text (`q`) matches the fulltext-indexed columns
-    (Nuxeo's default fulltext catalog covers all string-typed schema
-    properties, including `dc:title`, `dc:description`,
-    `broadcast:slug`, `broadcast:programme`, and `broadcast:bureau`).
-    NXQL `SELECT * FROM BroadcastAsset` is polymorphic, so
-    `BroadcastVideo` (and any future subtype) is included without extra
-    configuration.
+    Predicates in a whereClause (and the `q` clause appended in Java) are
+    automatically dropped when their bound request parameter is null or
+    empty, so every filter below is optional. NXQL
+    `SELECT * FROM BroadcastAsset` is polymorphic, so `BroadcastVideo` (and
+    any future subtype) is included without extra configuration.
 
     Aggregates below drive faceted search UIs (counts per bucket for
     `broadcast:storyType`, `broadcast:bureau`, and
@@ -130,11 +145,9 @@
   <extension target="org.nuxeo.ecm.platform.query.api.PageProviderService"
              point="providers">
 
-    <searchServicePageProvider name="MAM_BROADCAST_ASSET_SEARCH">
+    <genericPageProvider name="MAM_BROADCAST_ASSET_SEARCH"
+                          class="com.mam.platform.core.search.BroadcastAssetSearchPageProvider">
       <whereClause>
-        <predicate parameter="ecm:fulltext" operator="FULLTEXT">
-          <field name="q" />
-        </predicate>
         <predicate parameter="broadcast:storyType" operator="=">
           <field name="storyType" />
         </predicate>
@@ -189,7 +202,7 @@
       </aggregates>
       <sort column="dc:modified" ascending="false" />
       <pageSize>20</pageSize>
-    </searchServicePageProvider>
+    </genericPageProvider>
 
   </extension>
 

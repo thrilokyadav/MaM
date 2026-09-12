@@ -25,7 +25,7 @@ import { updateAsset, startWorkflow } from '../api/actionsApi';
 import { getCurrentUser } from '../api/meApi';
 import { approveTask, rejectTask, submitToEditorial, findMyTaskForDocument } from '../api/reviewApi';
 import type { ReviewQueueEntry } from '../api/reviewApi';
-import { archiveAsset, restoreAsset } from '../api/archiveApi';
+import { archiveAsset, restoreAsset, pollUntilRestored } from '../api/archiveApi';
 import { NuxeoApiError } from '../api/nuxeoClient';
 import { downloadBlobUrl } from '../api/mediaApi';
 import type { BroadcastProperties, DublinCoreProperties, MamDocument } from '../types/mam';
@@ -59,6 +59,10 @@ const RIGHTS_FIELDS: FieldDef[] = [
 ];
 const PROCESSING_FIELDS: FieldDef[] = [
   { key: 'broadcast:archiveState',    label: 'Archive state' },
+  { key: 'broadcast:archiveDate',     label: 'Archived date' },
+  { key: 'broadcast:archivedBy',      label: 'Archived by' },
+  { key: 'broadcast:restoreDate',     label: 'Restored date' },
+  { key: 'broadcast:restoredBy',      label: 'Restored by' },
 ];
 
 const STORY_TYPES: string[] = [
@@ -197,13 +201,16 @@ function deriveActions(
   // treat it as not-yet-actionable rather than guessing.
   const isReviewable = isQC && hasOpenTask === true;
   const isCold = archiveState === 'cold' || archiveState === 'restore-pending';
+  const isRestorePending = archiveState === 'restore-pending';
 
   const archiveAction: ActionState = isCold
     ? {
-        label: 'Restore',
-        Icon: RotateCcw,
-        enabled: can('MAM_Archive') || can('Write'),
-        reason: 'Requires MAM_Archive (mam-archivists) or Write on this asset.',
+        label: isRestorePending ? 'Restoring…' : 'Restore',
+        Icon: isRestorePending ? Loader2 : RotateCcw,
+        enabled: !isRestorePending && (can('MAM_Archive') || can('Write')),
+        reason: isRestorePending
+          ? 'Restore in progress — background worker is copying blob back to hot storage.'
+          : 'Requires MAM_Archive (mam-archivists) or Write on this asset.',
       }
     : {
         label: 'Archive',
@@ -386,11 +393,27 @@ export function AssetDetailPage() {
   }
 
   function onArchive() {
-    void runAssetAction('archive', async () => { await archiveAsset(uid); }, 'Archived.');
+    void runAssetAction('archive', async () => { await archiveAsset(uid); }, 'Archived to cold storage.');
   }
 
   function onRestore() {
-    void runAssetAction('restore', async () => { await restoreAsset(uid); }, 'Restored.');
+    setActionBusy('restore');
+    setActionResult(null);
+    void (async () => {
+      try {
+        await restoreAsset(uid);
+        setActionResult({ kind: 'success', message: 'Restore initiated. Restoring blob from cold storage…' });
+        await reload({ silent: true });
+        await pollUntilRestored(uid, undefined, 3000);
+        setActionResult({ kind: 'success', message: 'Restored to hot storage.' });
+        await new Promise((r) => setTimeout(r, 900));
+        await reload({ silent: true });
+      } catch (e) {
+        setActionResult(describeActionError(e));
+      } finally {
+        setActionBusy(null);
+      }
+    })();
   }
 
   useEffect(() => {
@@ -473,10 +496,25 @@ export function AssetDetailPage() {
       window.clearInterval(interval);
       ac.abort();
     };
-    // Only re-arm when the asset identity or processing-readiness changes,
-    // not on every unrelated re-render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, asset?.type, asset?.properties?.['vid:transcodedVideos']]);
+
+  // Auto-refresh while restore from cold storage is in progress.
+  useEffect(() => {
+    if (!asset || asset.properties?.['broadcast:archiveState'] !== 'restore-pending') return;
+
+    const ac = new AbortController();
+    pollUntilRestored(uid, undefined, 3000, ac.signal)
+      .then(() => {
+        void reload({ silent: true });
+      })
+      .catch(() => {
+        /* aborted or transient error */
+      });
+
+    return () => {
+      ac.abort();
+    };
+  }, [uid, asset?.properties?.['broadcast:archiveState'], reload]);
 
   if (loading) return <LoadingState rows={3} label="Loading asset" />;
   if (error) {
@@ -510,6 +548,7 @@ export function AssetDetailPage() {
     Reject: () => setShowRejectDialog(true),
     Archive: onArchive,
     Restore: onRestore,
+    'Restoring…': () => {},
   };
   const actionBusyKeys: Record<string, string> = {
     'Submit for review': 'submit',
@@ -518,6 +557,7 @@ export function AssetDetailPage() {
     Reject: 'reject',
     Archive: 'archive',
     Restore: 'restore',
+    'Restoring…': 'restore',
   };
   const anyActionBusy = actionBusy !== null;
 
@@ -631,7 +671,14 @@ export function AssetDetailPage() {
                     type="button"
                     className="btn btn-secondary"
                     onClick={() => void onDownloadOriginal()}
-                    disabled={downloading}
+                    disabled={downloading || archiveState === 'cold' || archiveState === 'restore-pending'}
+                    title={
+                      archiveState === 'cold'
+                        ? 'Asset is in cold storage (HP ProLiant Storage Server). Restore to hot storage to download original media.'
+                        : archiveState === 'restore-pending'
+                          ? 'Restore in progress — high-res media is currently in cold storage.'
+                          : undefined
+                    }
                   >
                     {downloading ? <Loader2 className="spin" aria-hidden /> : <Download aria-hidden />}
                     {downloading ? 'Downloading…' : 'Download original'}
@@ -656,6 +703,29 @@ export function AssetDetailPage() {
           onCancel={() => setShowRejectDialog(false)}
           onConfirm={onRejectConfirm}
         />
+      ) : null}
+
+      {archiveState === 'cold' ? (
+        <div className="card card-body detail-cold-banner" role="status">
+          <ArchiveIcon className="detail-cold-icon" aria-hidden="true" />
+          <div className="detail-cold-text">
+            <h3 className="detail-cold-title">Asset is in Cold Storage</h3>
+            <p className="detail-cold-desc">
+              High-resolution media has been moved to cold storage (48 TB SAS tier). Metadata and proxy records are preserved.
+              Click <strong>Restore</strong> in the actions toolbar to bring the asset back to hot storage for streaming and download.
+            </p>
+          </div>
+        </div>
+      ) : archiveState === 'restore-pending' || actionBusy === 'restore' ? (
+        <div className="card card-body detail-restore-banner" role="status">
+          <Loader2 className="detail-cold-icon spin" aria-hidden="true" />
+          <div className="detail-cold-text">
+            <h3 className="detail-cold-title">Restoring from Cold Storage</h3>
+            <p className="detail-cold-desc">
+              MamRestoreWork is currently streaming the binary blob from cold storage back to the hot SAS tier. This page will update automatically once restoration completes.
+            </p>
+          </div>
+        </div>
       ) : null}
 
       {asset.type === 'BroadcastVideo' ? (

@@ -19,9 +19,64 @@
 
   <name>MAM Platform :: Core</name>
   <description>
-    MAM core OSGi bundle. Placeholder scaffold: registers an empty Nuxeo
-    component contribution. No document schema, service, or Java code yet.
+    MAM core OSGi bundle. Registers the `broadcast` schema, the
+    BroadcastAsset/BroadcastVideo document types, and the
+    MAM_BROADCAST_ASSET_SEARCH named page provider (backed by a small
+    custom Java PageProvider, BroadcastAssetSearchPageProvider, so the
+    free-text search box can match multiple metadata columns).
   </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.nuxeo.ecm.core</groupId>
+      <artifactId>nuxeo-core-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.nuxeo.ecm.core</groupId>
+      <artifactId>nuxeo-core-query</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.nuxeo.ecm.platform</groupId>
+      <artifactId>nuxeo-platform-query-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!--
+      Nuxeo automation API — provides @Operation, @Param, OperationContext, etc.
+      Already on the Nuxeo server classpath; provided scope keeps the JAR out
+      of the addon ZIP.
+    -->
+    <dependency>
+      <groupId>org.nuxeo.ecm.automation</groupId>
+      <artifactId>nuxeo-automation-core</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!--
+      Nuxeo WorkManager API — AbstractWork, WorkManager service (in nuxeo-core-event).
+      Shipped with the Nuxeo platform; provided scope.
+    -->
+    <dependency>
+      <groupId>org.nuxeo.ecm.core</groupId>
+      <artifactId>nuxeo-core-event</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!--
+      AWS SDK v2 S3 client — bundled inside nuxeo-amazon-s3-package at
+      runtime.  Declared provided here so Maven compiles against it without
+      embedding a second copy in the addon JAR.
+    -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
 
   <build>
     <plugins>
@@ -30,7 +85,7 @@
         <artifactId>maven-jar-plugin</artifactId>
         <configuration>
           <archive>
-            <manifestFile>${project.build.outputDirectory}/META-INF/MANIFEST.MF</manifestFile>
+            <manifestFile>src/main/resources/META-INF/MANIFEST.MF</manifestFile>
           </archive>
         </configuration>
       </plugin>

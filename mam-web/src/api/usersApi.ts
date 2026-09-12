@@ -163,6 +163,7 @@ export async function listUsers(query = '*', signal?: AbortSignal): Promise<Nuxe
 
 /** Create a user in the given group(s). */
 export async function createUser(input: CreateUserInput): Promise<NuxeoUser> {
+  const groups = Array.from(new Set([...(input.groups ?? []), 'members']));
   const body = {
     'entity-type': 'user',
     properties: {
@@ -171,7 +172,7 @@ export async function createUser(input: CreateUserInput): Promise<NuxeoUser> {
       lastName: input.lastName ?? '',
       email: input.email ?? '',
       password: input.password,
-      groups: input.groups,
+      groups,
     },
   };
   return writeJson<NuxeoUser>('POST', '/user', body);

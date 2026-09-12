@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  MAM cold-storage archive contributions.
+
+  Registers:
+    1. MAM.ArchiveAsset automation operation
+       Moves blob from hot S3 bucket to cold S3 bucket (copy + HeadObject
+       verify + delete), then sets broadcast:archiveState = "cold".
+
+    2. MAM.RestoreAsset automation operation
+       Sets broadcast:archiveState = "restore-pending" immediately and
+       schedules a MamRestoreWork on the mam-restore work queue.
+
+    3. mam-restore WorkManager queue
+       Dedicated thread pool (2 threads by default) so large video restores
+       do not block unrelated background work.
+-->
+<component name="com.mam.platform.core.archive" version="1.0">
+
+  <require>org.nuxeo.ecm.core.operation.OperationServiceComponent</require>
+  <require>org.nuxeo.ecm.core.work.service</require>
+  <!-- archive operations write broadcast:* properties; the schema must be
+       loaded first -->
+  <require>com.mam.platform.core.doctype</require>
+
+  <!-- ===================================================================
+       1. Automation Operations
+       =================================================================== -->
+  <extension target="org.nuxeo.ecm.core.operation.OperationServiceComponent"
+             point="operations">
+
+    <!--
+      MAM.ArchiveAsset
+      Input  : Document (must have file:content blob)
+      Output : Document (updated, archiveState = "cold")
+      Auth   : Enforced by Nuxeo ACL (MAM_Archive / Write).
+    -->
+    <operation class="com.mam.platform.core.archive.MamArchiveOperation" />
+
+    <!--
+      MAM.RestoreAsset
+      Input  : Document (must be in archiveState = "cold")
+      Output : Document (updated, archiveState = "restore-pending")
+      Auth   : Enforced by Nuxeo ACL (MAM_Archive / Write).
+    -->
+    <operation class="com.mam.platform.core.archive.MamRestoreOperation" />
+
+  </extension>
+
+  <!-- ===================================================================
+       2. WorkManager queue for async blob restore
+       =================================================================== -->
+  <extension target="org.nuxeo.ecm.core.work.service" point="queues">
+    <!--
+      mam-restore: dedicated queue for MamRestoreWork instances.
+
+      maxThreads=2: two concurrent restores is enough for the HP ProLiant
+        dev/production setup. Restoring a large video from cold MinIO/S3
+        is I/O-bound and saturates the network link well before you need
+        more threads.
+
+      maxQueueSize=100: prevents unbounded queue growth if a large batch
+        of restores is triggered simultaneously. Work items beyond the cap
+        are rejected (caller gets a NuxeoException); the UI already retries.
+
+      clearCompletedAfterSeconds=600: keeps completed work entries for 10
+        minutes so the Nuxeo admin UI can inspect them, then purges to
+        avoid memory pressure on long-running servers.
+    -->
+    <queue id="mam-restore"
+           name="MAM Cold-Storage Restore Queue"
+           maxThreads="2"
+           maxQueueSize="100"
+           clearCompletedAfterSeconds="600" />
+  </extension>
+
+</component>

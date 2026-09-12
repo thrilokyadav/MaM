@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  Loader2,
   Lock,
   RotateCcw,
   ShieldAlert,
@@ -13,7 +14,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { searchAssets, DEFAULT_PAGE_SIZE } from '../api/searchApi';
-import { archiveAsset, restoreAsset, canArchive, canRestore } from '../api/archiveApi';
+import { archiveAsset, restoreAsset, canArchive, canRestore, pollUntilRestored } from '../api/archiveApi';
 import { NuxeoApiError } from '../api/nuxeoClient';
 import type { AssetSearchParams, MamDocument } from '../types/mam';
 import type { NuxeoPageProviderResult } from '../types/nuxeo';
@@ -98,6 +99,8 @@ function describeError(e: unknown): { kind: 'denied' | 'error'; message: string 
 
 interface RowState {
   busy?: 'archive' | 'restore';
+  /** Set while MamRestoreWork is running (restore-pending polling active). */
+  restoring?: boolean;
   result?: { kind: 'success'; message: string } | { kind: 'denied'; message: string } | { kind: 'error'; message: string };
 }
 
@@ -205,11 +208,32 @@ export function ArchivePage() {
   }
 
   function onArchive(doc: MamDocument) {
-    void runRowAction(doc, 'archive', () => archiveAsset(doc.uid), 'Archived.');
+    void runRowAction(doc, 'archive', () => archiveAsset(doc.uid), 'Archived to cold storage.');
   }
 
+  /**
+   * Restore flow:
+   * 1. Call MAM.RestoreAsset (sets archiveState=restore-pending synchronously).
+   * 2. Mark row as restoring=true so the UI shows a live spinner.
+   * 3. Poll every 3s via pollUntilRestored until archiveState != restore-pending.
+   * 4. Refresh the full list when the worker completes.
+   */
   function onRestore(doc: MamDocument) {
-    void runRowAction(doc, 'restore', () => restoreAsset(doc.uid), 'Restored.');
+    const uid = doc.uid;
+    setRow(uid, { busy: 'restore', result: undefined });
+    void (async () => {
+      try {
+        await restoreAsset(uid);
+        // Blob move in progress — switch to polling mode.
+        setRow(uid, { busy: undefined, restoring: true, result: undefined });
+        await pollUntilRestored(uid, undefined, 3000);
+        setRow(uid, { restoring: false, result: { kind: 'success', message: 'Restored to hot storage.' } });
+        await new Promise((r) => setTimeout(r, 900));
+        await runSearch(params, { silent: true });
+      } catch (e) {
+        setRow(uid, { busy: undefined, restoring: false, result: describeError(e) });
+      }
+    })();
   }
 
   const hasClientFilters = Boolean(params.programme || params.bureau || params.airDateFrom || params.airDateTo);
@@ -412,6 +436,7 @@ interface ArchiveRowProps {
   onDismissResult: () => void;
 }
 
+
 function ArchiveRow({ doc, state, onArchive, onRestore, onDismissResult }: ArchiveRowProps) {
   const props = doc.properties ?? {};
   const programme = pick(props, 'broadcast:programme');
@@ -419,13 +444,15 @@ function ArchiveRow({ doc, state, onArchive, onRestore, onDismissResult }: Archi
   const storyType = pick(props, 'broadcast:storyType');
   const archiveState = pick(props, 'broadcast:archiveState');
   const airDate = pick(props, 'broadcast:airDate');
+  const archiveDate = pick(props, 'broadcast:archiveDate');
   const lastModified = doc.lastModified ?? pick(props, 'dc:modified');
 
   const isCold = archiveState === 'cold' || archiveState === 'restore-pending';
+  const isRestorePending = archiveState === 'restore-pending' || state.restoring;
   const allowedToArchive = canArchive(doc);
   const allowedToRestore = canRestore(doc);
   const busy = state.busy;
-  const busyAny = Boolean(busy);
+  const busyAny = Boolean(busy) || Boolean(state.restoring);
 
   return (
     <article className="asset-card archive-row">
@@ -449,6 +476,7 @@ function ArchiveRow({ doc, state, onArchive, onRestore, onDismissResult }: Archi
           <div><dt>Bureau</dt><dd>{bureau ?? '—'}</dd></div>
           <div><dt>Story</dt><dd>{storyType ?? '—'}</dd></div>
           <div><dt>Air date</dt><dd>{formatDate(airDate)}</dd></div>
+          {archiveDate ? <div><dt>Archived</dt><dd>{formatDate(archiveDate)}</dd></div> : null}
           <div><dt>Last updated</dt><dd>{formatDate(lastModified)}</dd></div>
         </dl>
 
@@ -464,11 +492,21 @@ function ArchiveRow({ doc, state, onArchive, onRestore, onDismissResult }: Archi
             type="button"
             className="btn btn-primary btn-sm"
             onClick={onRestore}
-            disabled={busyAny || !allowedToRestore}
-            title={!allowedToRestore ? 'Requires MAM_Archive (mam-archivists) or Write on this asset.' : undefined}
+            disabled={busyAny || !allowedToRestore || isRestorePending}
+            title={
+              isRestorePending
+                ? 'Restore in progress — the background worker is copying the file back to hot storage.'
+                : !allowedToRestore
+                  ? 'Requires MAM_Archive (mam-archivists) or Write on this asset.'
+                  : undefined
+            }
           >
-            <RotateCcw aria-hidden="true" /> Restore
-            {!allowedToRestore ? <Lock aria-hidden="true" style={{ width: 12, height: 12, opacity: 0.6 }} /> : null}
+            {isRestorePending
+              ? <><Loader2 aria-hidden="true" className="spin" /> Restoring…</>
+              : <><RotateCcw aria-hidden="true" /> Restore</>}
+            {!allowedToRestore && !isRestorePending
+              ? <Lock aria-hidden="true" style={{ width: 12, height: 12, opacity: 0.6 }} />
+              : null}
           </button>
         ) : (
           <button
@@ -478,7 +516,9 @@ function ArchiveRow({ doc, state, onArchive, onRestore, onDismissResult }: Archi
             disabled={busyAny || !allowedToArchive}
             title={!allowedToArchive ? 'Requires MAM_Archive (mam-archivists) or Write on this asset.' : undefined}
           >
-            <ArchiveIcon aria-hidden="true" /> Archive
+            {busy === 'archive'
+              ? <><Loader2 aria-hidden="true" className="spin" /> Archiving…</>
+              : <><ArchiveIcon aria-hidden="true" /> Archive</>}
             {!allowedToArchive ? <Lock aria-hidden="true" style={{ width: 12, height: 12, opacity: 0.6 }} /> : null}
           </button>
         )}

@@ -124,37 +124,22 @@ export function AssetSearchPage() {
         <LoadingState rows={5} label="Searching" />
       ) : error ? (
         <ErrorState
-          title={error.includes('Fulltext') ? 'Free-text search is unavailable here' : undefined}
-          message={
-            error.includes('Fulltext')
-              ? 'This local test backend (embedded H2) cannot run free-text queries. Clear the search box and use the status/story/archive filter chips instead — those work on every backend.'
-              : error
-          }
+          message={error}
           action={
-            error.includes('Fulltext') ? (
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => setParams({ ...params, q: undefined })}
-              >
-                Clear search text
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => void runSearch(params)}
-              >
-                Retry
-              </button>
-            )
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => void runSearch(params)}
+            >
+              Retry
+            </button>
           }
         />
       ) : result && result.entries.length === 0 ? (
         <EmptyState
           Icon={Inbox}
           title="No matching assets"
-          description="Try clearing the free-text query or removing a filter. On the local smoke stack, free-text search is disabled because the embedded H2 backend does not support Nuxeo fulltext."
+          description="Try a different search term or clear a filter."
         />
       ) : (
         <div className="stack">

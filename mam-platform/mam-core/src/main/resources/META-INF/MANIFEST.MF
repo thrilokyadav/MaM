@@ -3,4 +3,4 @@ Bundle-ManifestVersion: 1
 Bundle-Name: MAM Platform Core
 Bundle-SymbolicName: com.mam.platform.core;singleton:=true
 Bundle-Vendor: MAM Platform
-Nuxeo-Component: OSGI-INF/mam-core-contrib.xml
+Nuxeo-Component: OSGI-INF/mam-core-contrib.xml,OSGI-INF/mam-archive-contrib.xml

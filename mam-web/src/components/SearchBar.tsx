@@ -67,7 +67,7 @@ export function SearchBar({ value, onChange, onSubmit, busy }: SearchBarProps) {
             id={qFieldId}
             type="search"
             className="input input-lg"
-            placeholder="Search by title, slug, programme, bureau…"
+            placeholder="Search by title…"
             value={localQ}
             onChange={(e) => setLocalQ(e.target.value)}
             autoComplete="off"
@@ -78,12 +78,6 @@ export function SearchBar({ value, onChange, onSubmit, busy }: SearchBarProps) {
           {busy ? 'Searching…' : 'Search'}
         </button>
       </form>
-
-      <p className="search-hint">
-        Typed search requires PostgreSQL + Elasticsearch and is disabled on
-        the local H2-backed test stack — use the filter chips below
-        instead, which always work.
-      </p>
 
       <div className="search-filters" role="group" aria-label="Filters">
         <FilterGroup label="Status" active={value.editorialStatus}>

@@ -76,6 +76,21 @@
       <version>0.22.1</version>
     </dependency>
 
+    <!-- AWS SDK v2 S3 client, used by ColdStorageS3Mover to physically
+         copy/verify/delete blobs between the hot and cold MinIO buckets
+         (Priority 5, Option A: cross-bucket copy, NOT the nuxeo-coldstorage
+         addon's storage-class transition mechanism). Version is already
+         pinned by Nuxeo's own BOM (nuxeo-core-binarymanager-s3 depends on
+         this same artifact), so no version is declared here. Provided
+         scope: the vendored nuxeo-amazon-s3-package already ships this jar
+         on the running server (see Dockerfile.integration), so it must not
+         be duplicated into mam-package's bundle set. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <scope>provided</scope>
+    </dependency>
+
     <!-- Test scope: repository-backed runtime test harness, plus
          mam-core so BroadcastAsset/the broadcast schema are available
          to create fixtures. -->
@@ -122,7 +137,7 @@
         <artifactId>maven-jar-plugin</artifactId>
         <configuration>
           <archive>
-            <manifestFile>${project.build.outputDirectory}/META-INF/MANIFEST.MF</manifestFile>
+            <manifestFile>src/main/resources/META-INF/MANIFEST.MF</manifestFile>
           </archive>
         </configuration>
       </plugin>

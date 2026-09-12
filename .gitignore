@@ -1,0 +1,24 @@
+# Node & Vite
+node_modules/
+dist/
+*.timestamp-*.mjs
+
+# Maven & Build Output
+target/
+*.jar
+*.zip
+
+# Logs & Temporary files
+logs/
+*.log
+*.tmp
+.mam-jwt-secret.tmp
+test-video.mov
+vendor-tmp/
+nuxeo/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

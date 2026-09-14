@@ -25,7 +25,7 @@ import { updateAsset, startWorkflow } from '../api/actionsApi';
 import { getCurrentUser } from '../api/meApi';
 import { approveTask, rejectTask, submitToEditorial, findMyTaskForDocument } from '../api/reviewApi';
 import type { ReviewQueueEntry } from '../api/reviewApi';
-import { archiveAsset, restoreAsset, pollUntilRestored } from '../api/archiveApi';
+import { archiveAsset, restoreAsset, pollUntilRestored, pollUntilArchived } from '../api/archiveApi';
 import { NuxeoApiError } from '../api/nuxeoClient';
 import { downloadBlobUrl } from '../api/mediaApi';
 import type { BroadcastProperties, DublinCoreProperties, MamDocument } from '../types/mam';
@@ -200,8 +200,12 @@ function deriveActions(
   // `hasOpenTask === undefined` means that lookup hasn't resolved yet;
   // treat it as not-yet-actionable rather than guessing.
   const isReviewable = isQC && hasOpenTask === true;
-  const isCold = archiveState === 'cold' || archiveState === 'restore-pending';
   const isRestorePending = archiveState === 'restore-pending';
+  const isArchivePending = archiveState === 'archive-pending';
+  // "Cold-side" states show the Restore button; "archive-pending" is still a
+  // hot-side/in-progress state so it stays on the Archive button (disabled,
+  // showing progress) until the background worker finishes moving to cold.
+  const isCold = archiveState === 'cold' || isRestorePending;
 
   const archiveAction: ActionState = isCold
     ? {
@@ -211,6 +215,13 @@ function deriveActions(
         reason: isRestorePending
           ? 'Restore in progress — background worker is copying blob back to hot storage.'
           : 'Requires MAM_Archive (mam-archivists) or Write on this asset.',
+      }
+    : isArchivePending
+    ? {
+        label: 'Archiving…',
+        Icon: Loader2,
+        enabled: false,
+        reason: 'Archive in progress — background worker is copying blob to cold storage.',
       }
     : {
         label: 'Archive',
@@ -307,6 +318,35 @@ export function AssetDetailPage() {
     }
   }, [uid]);
 
+  /**
+   * Refetch the asset, retrying until `done(doc)` returns true or we run out
+   * of attempts, then update the displayed asset. Workflow transitions
+   * (submit/approve/reject) commit on the Nuxeo side a beat after the REST
+   * call returns, so a single immediate refetch often still sees the OLD
+   * editorial status — which is exactly what made it look like the UI
+   * "didn't update until I refreshed". This polls the document (fast, cheap)
+   * until the expected change lands, so the view updates on its own with no
+   * manual browser refresh. It always sets whatever it last fetched, so even
+   * if the change never lands the UI is still fresh, never stuck on stale
+   * pre-action data.
+   */
+  const reloadUntil = useCallback(
+    async (done: (doc: MamDocument) => boolean, attempts = 8, intervalMs = 600) => {
+      let latest: MamDocument | null = null;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          latest = await fetchAsset(uid);
+          setAsset(latest);
+          if (done(latest)) return;
+        } catch {
+          /* transient fetch error — retry on the next tick */
+        }
+        if (i < attempts - 1) await new Promise((r) => setTimeout(r, intervalMs));
+      }
+    },
+    [uid],
+  );
+
   function describeActionError(e: unknown): { kind: 'denied' | 'error'; message: string } {
     if (e instanceof NuxeoApiError) {
       if (e.status === 403) {
@@ -317,14 +357,26 @@ export function AssetDetailPage() {
     return { kind: 'error', message: e instanceof Error ? e.message : 'Unknown error.' };
   }
 
-  async function runAssetAction(kind: string, fn: () => Promise<void>, successMessage: string) {
+  async function runAssetAction(
+    kind: string,
+    fn: () => Promise<void>,
+    successMessage: string,
+    settled?: (doc: MamDocument) => boolean,
+  ) {
     setActionBusy(kind);
     setActionResult(null);
     try {
       await fn();
       setActionResult({ kind: 'success', message: successMessage });
-      await new Promise((r) => setTimeout(r, 900));
-      await reload({ silent: true });
+      // Refetch until the backend reflects the change (workflow transitions
+      // commit a moment after the call returns), so the view updates itself
+      // with no manual browser refresh. If no predicate is given, a single
+      // silent reload is enough.
+      if (settled) {
+        await reloadUntil(settled);
+      } else {
+        await reload({ silent: true });
+      }
     } catch (e) {
       setActionResult(describeActionError(e));
     } finally {
@@ -357,6 +409,9 @@ export function AssetDetailPage() {
     void action; // kept for call-site readability; not otherwise used
   }
 
+  const editorialStatusOf = (doc: MamDocument) =>
+    doc.properties?.['broadcast:editorialStatus'] as string | undefined;
+
   function onSubmitForReview() {
     void runAssetAction(
       'submit',
@@ -364,6 +419,8 @@ export function AssetDetailPage() {
         await startWorkflow(uid, 'MAM_EDITORIAL_APPROVAL');
       },
       'Submitted for review.',
+      // Submitting starts the route, which auto-advances Draft -> QC.
+      (doc) => editorialStatusOf(doc) === 'qc',
     );
   }
 
@@ -372,6 +429,7 @@ export function AssetDetailPage() {
       'approve',
       () => withMyTask('approve', (entry) => approveTask(entry)),
       'Approved.',
+      (doc) => editorialStatusOf(doc) === 'approved',
     );
   }
 
@@ -380,6 +438,10 @@ export function AssetDetailPage() {
       'submit_to_editorial',
       () => withMyTask('submit_to_editorial', (entry) => submitToEditorial(entry)),
       'Submitted to Editorial Approval.',
+      // Stays in 'qc' but the open task moves to the editorial reviewer; the
+      // caller no longer has an actionable task, so treat "my QC task is
+      // gone" as settled via a fresh permissions/task re-read on reload.
+      undefined,
     );
   }
 
@@ -389,11 +451,27 @@ export function AssetDetailPage() {
       'reject',
       () => withMyTask('reject', (entry) => rejectTask(entry, reason)),
       'Rejected.',
+      (doc) => editorialStatusOf(doc) === 'rejected',
     );
   }
 
   function onArchive() {
-    void runAssetAction('archive', async () => { await archiveAsset(uid); }, 'Archived to cold storage.');
+    setActionBusy('archive');
+    setActionResult(null);
+    void (async () => {
+      try {
+        await archiveAsset(uid);
+        setActionResult({ kind: 'success', message: 'Archive initiated. Moving blob to cold storage…' });
+        await reload({ silent: true });
+        await pollUntilArchived(uid, undefined, 3000);
+        setActionResult({ kind: 'success', message: 'Archived to cold storage.' });
+        await reload({ silent: true });
+      } catch (e) {
+        setActionResult(describeActionError(e));
+      } finally {
+        setActionBusy(null);
+      }
+    })();
   }
 
   function onRestore() {
@@ -406,7 +484,6 @@ export function AssetDetailPage() {
         await reload({ silent: true });
         await pollUntilRestored(uid, undefined, 3000);
         setActionResult({ kind: 'success', message: 'Restored to hot storage.' });
-        await new Promise((r) => setTimeout(r, 900));
         await reload({ silent: true });
       } catch (e) {
         setActionResult(describeActionError(e));
@@ -504,6 +581,26 @@ export function AssetDetailPage() {
 
     const ac = new AbortController();
     pollUntilRestored(uid, undefined, 3000, ac.signal)
+      .then(() => {
+        void reload({ silent: true });
+      })
+      .catch(() => {
+        /* aborted or transient error */
+      });
+
+    return () => {
+      ac.abort();
+    };
+  }, [uid, asset?.properties?.['broadcast:archiveState'], reload]);
+
+  // Auto-refresh while archive to cold storage is in progress (e.g. if the
+  // user navigated away and back, or reloaded, while the background
+  // MamArchiveWork is still copying the blob).
+  useEffect(() => {
+    if (!asset || asset.properties?.['broadcast:archiveState'] !== 'archive-pending') return;
+
+    const ac = new AbortController();
+    pollUntilArchived(uid, undefined, 3000, ac.signal)
       .then(() => {
         void reload({ silent: true });
       })

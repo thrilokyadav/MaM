@@ -190,7 +190,36 @@
     <listener name="mamArchiveStateGuard"
               class="com.mam.platform.security.listener.ArchiveStateGuardListener"
               async="false" postCommit="false" priority="10">
+      <event>aboutToCreate</event>
       <event>beforeDocumentModification</event>
+    </listener>
+  </extension>
+
+  <!-- ============================================================
+       Administrator auto-approve on upload.
+
+       Administrator has full rights over the MAM editorial/archive
+       lifecycle: any asset an Administrator creates is auto-approved
+       (skips draft/qc/review entirely), and Administrator already
+       bypasses both ArchiveStateGuardListener and
+       EditorialStatusGuardListener below on every later transition, so
+       Administrator can freely archive/restore and change editorial
+       status afterward too. Every other principal (producers, editors,
+       archivists) is completely unaffected: their assets are still
+       created with no editorial status, same as always.
+
+       Registered on `aboutToCreate` (fires while the DocumentModel is
+       still being assembled, before the first save), so this only
+       stamps the in-flight document; no extra save, and
+       EditorialStatusGuardListener's `beforeDocumentModification` guard
+       never even sees this as a "change" since there is no previous
+       document model yet at creation time.
+       ============================================================ -->
+  <extension target="org.nuxeo.ecm.core.event.EventServiceComponent" point="listener">
+    <listener name="mamAdministratorAutoApprove"
+              class="com.mam.platform.security.listener.AdministratorAutoApproveListener"
+              async="false" postCommit="false" priority="10">
+      <event>aboutToCreate</event>
     </listener>
   </extension>
 
@@ -216,7 +245,8 @@
   <extension target="org.nuxeo.ecm.core.event.EventServiceComponent" point="listener">
     <listener name="mamEditorialStatusGuard"
               class="com.mam.platform.security.listener.EditorialStatusGuardListener"
-              async="false" postCommit="false" priority="10">
+              async="false" postCommit="false" priority="20">
+      <event>aboutToCreate</event>
       <event>beforeDocumentModification</event>
     </listener>
   </extension>
@@ -224,31 +254,38 @@
   <!-- ============================================================
        Cold storage physical blob mover (Priority 5, Option A).
 
-       Reacts to `documentModified`, which only fires once the save has
-       proceeded past every `beforeDocumentModification` listener without
-       one of them rejecting it, so ArchiveStateGuardListener's guard
-       (priority 10 above, on `beforeDocumentModification`) has already run
-       and authorized the change by the time this listener sees the event
-       at all; a rejected (403) archiveState change never fires
-       `documentModified` in the first place, so this listener naturally
-       never reacts to it.
+       DISABLED / SUPERSEDED. This event-driven mover was the original
+       Option A implementation that reacted to a direct
+       `broadcast:archiveState` property change (a plain REST PUT) and
+       scheduled ColdStorageBlobMoveWork to relocate the blob.
 
-       async="false"/postCommit="false" is correct here even though the
-       actual blob move must not run until the enclosing transaction has
-       committed: this listener's only job is to call
-       `WorkManager#schedule(work, afterCommit=true)`, a cheap, non-blocking
-       call. It is that `afterCommit=true` flag, not this listener's own
-       sync/async setting, that defers the Work's actual execution until
-       after commit. Making the listener itself async/postCommit would just
-       add an unnecessary extra hop through the async event queue before
-       the (already deferred) Work gets scheduled.
+       The archive/restore flow the frontend actually uses now goes
+       through the mam-core automation operations MAM.ArchiveAsset and
+       MAM.RestoreAsset (MamArchiveOperation with MamArchiveWork, and
+       MamRestoreOperation with MamRestoreWork), which is the single
+       source of truth for the physical move. That mam-core pipeline is
+       strictly safer: it does content-addressable dedup reference
+       counting before deleting a blob (never removes a blob another live
+       document still needs), reverts archiveState on failure so the UI
+       never gets stuck, and configures generous S3 socket/api timeouts
+       for large MinIO server-side copies.
+
+       Leaving THIS listener registered as well caused a SECOND, redundant
+       move to be scheduled every time MamArchiveWork's save flipped
+       archiveState to `cold` (documentModified fires), duplicating work
+       and, because this path deletes unconditionally with a different S3
+       key derivation, creating a latent data-loss risk. It is therefore
+       unregistered. The ColdStorageBlobMoverListener, ColdStorageBlobMoveWork
+       and ColdStorageS3Mover classes are kept in the source tree (a clean,
+       self-contained reference implementation) but are no longer wired to
+       any event.
        ============================================================ -->
-  <extension target="org.nuxeo.ecm.core.event.EventServiceComponent" point="listener">
+  <!-- extension target="org.nuxeo.ecm.core.event.EventServiceComponent" point="listener">
     <listener name="mamColdStorageBlobMover"
               class="com.mam.platform.security.coldstorage.ColdStorageBlobMoverListener"
               async="false" postCommit="false" priority="5">
       <event>documentModified</event>
     </listener>
-  </extension>
+  </extension -->
 
 </component>

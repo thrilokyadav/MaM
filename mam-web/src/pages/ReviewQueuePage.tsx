@@ -27,6 +27,11 @@ import { LoadingState } from '../components/LoadingState';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import './pages.css';
+// ReviewQueuePage reuses `.asset-meta`/`.asset-card-badges`/`.asset-thumb`
+// base styles in its rows without rendering the <AssetCard> component, so it
+// must import those styles itself — otherwise they may not load when the app
+// is opened straight into /review under route-level code splitting.
+import '../components/AssetCard.css';
 import './ReviewQueuePage.css';
 
 interface RowState {
@@ -120,10 +125,11 @@ export function ReviewQueuePage() {
     try {
       await fn();
       setRow(taskId, { busy: undefined, result: { kind: 'success', message: successMessage } });
-      // Give the success banner a beat on screen before refreshing — a
-      // completed task disappears from "my tasks" entirely, so without
-      // this pause the banner would never be visible.
-      await new Promise((r) => setTimeout(r, 1200));
+      // Give the success banner a brief beat on screen before refreshing — a
+      // completed task disappears from "my tasks" entirely, so without this
+      // pause the banner would never be visible. Kept short so the queue
+      // feels responsive.
+      await new Promise((r) => setTimeout(r, 600));
       // Refresh tasks + document status from the server. Silent: keep the
       // list mounted instead of showing the loading skeleton again.
       await load({ silent: true });

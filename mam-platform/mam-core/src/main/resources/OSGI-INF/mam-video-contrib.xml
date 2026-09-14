@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  MAM video proxy configuration.
+
+  Stock nuxeo-platform-video (video-service-contrib.xml) enables THREE
+  automatic proxy transcodes on every uploaded video: "MP4 480p"
+  (H.264 / libx264, fast), "WebM 480p" (VP8 / libvorbis, very slow) and
+  offers "Ogg 480p" as a rendition. On this hardware the WebM VP8 encode
+  of a normal broadcast clip runs past the platform's 600s command-line
+  timeout and is killed with exit code 137, so the whole video-conversion
+  Work fails and vid:transcodedVideos is never populated. The asset then
+  shows "Processing..." forever and no poster thumbnail is generated
+  (ThumbnailVideoFactory needs the picture:views poster frame that the
+  same pipeline produces).
+
+  MAM only needs ONE web-playable proxy, and the custom frontend
+  (VideoPlayer.tsx) already prefers an MP4 (H.264) proxy. So this
+  contribution keeps the fast MP4 conversion and disables the slow WebM
+  and Ogg ones.
+
+  Both AutomaticVideoConversion and VideoConversion are Nuxeo runtime
+  Descriptors keyed by their `name` (getId() == name) with an `enabled`
+  flag, so re-declaring an entry with the same name and enabled="false"
+  merges over the stock one and switches it off. This requires this
+  component to be contributed AFTER the stock
+  org.nuxeo.ecm.platform.video.service.contrib, which the <require>
+  below guarantees.
+-->
+<component name="com.mam.platform.core.video" version="1.0">
+
+  <require>org.nuxeo.ecm.platform.video.service.contrib</require>
+
+  <!-- Turn off the slow proxy transcodes at the automatic-conversion level
+       so they never run on upload. Only MP4 480p stays automatic. -->
+  <extension target="org.nuxeo.ecm.platform.video.service.VideoService"
+    point="automaticVideoConversions">
+    <automaticVideoConversion name="MP4 480p" order="0" enabled="true" />
+    <automaticVideoConversion name="WebM 480p" enabled="false" />
+    <automaticVideoConversion name="Ogg 480p" enabled="false" />
+  </extension>
+
+  <!-- Also drop the WebM/Ogg renditions so they are not offered on demand
+       (they would hit the same slow-encode timeout). MP4 remains as the
+       single web-playable rendition. -->
+  <extension target="org.nuxeo.ecm.platform.video.service.VideoService"
+    point="videoConversions">
+    <videoConversion name="WebM 480p" converter="convertToWebM" height="480"
+      rendition="true" enabled="false" />
+    <videoConversion name="Ogg 480p" converter="convertToOgg" height="480"
+      rendition="true" enabled="false" />
+  </extension>
+
+</component>

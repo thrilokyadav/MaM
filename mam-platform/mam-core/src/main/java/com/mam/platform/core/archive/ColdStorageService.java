@@ -10,6 +10,8 @@ import org.nuxeo.runtime.api.Framework;
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
@@ -21,6 +23,7 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import java.net.URI;
+import java.time.Duration;
 
 /**
  * Thin S3 / MinIO client for the MAM cold-storage archive pipeline.
@@ -69,6 +72,21 @@ public class ColdStorageService {
      * @param key blob digest key (content-addressable; same value in both buckets)
      */
     public void archiveBlob(String key) {
+        copyHotToCold(key);
+        deleteFromHot(key);
+    }
+
+    /**
+     * Copies {@code key} from the hot bucket to the cold bucket and verifies
+     * the copy via a {@code HeadObject} call. Does NOT delete the source; the
+     * caller decides whether the hot copy can be removed (see
+     * {@link #deleteFromHot(String)}) once it has confirmed no other document
+     * still needs the blob in hot storage. Idempotent: copying an object that
+     * already exists in cold simply overwrites it with identical bytes.
+     *
+     * @param key blob digest key (content-addressable; same value in both buckets)
+     */
+    public void copyHotToCold(String key) {
         String hot  = hotBucket();
         String cold = coldBucket();
         S3Client s3 = client();
@@ -83,19 +101,30 @@ public class ColdStorageService {
                 .build();
         s3.copyObject(copyReq);
 
-        // Verify the copy exists in cold storage BEFORE deleting from hot.
         HeadObjectRequest headReq = (HeadObjectRequest) HeadObjectRequest.builder()
                 .bucket(cold)
                 .key(key)
                 .build();
         HeadObjectResponse head = s3.headObject(headReq);
         log.info("MAM archive: cold copy verified size={} etag={}", head.contentLength(), head.eTag());
+    }
 
+    /**
+     * Deletes {@code key} from the hot bucket. Call this only after
+     * {@link #copyHotToCold(String)} has confirmed the cold copy exists AND
+     * the caller has confirmed no other document still references this blob
+     * in hot storage (content-addressable dedup means one physical object can
+     * back several documents).
+     *
+     * @param key blob digest key
+     */
+    public void deleteFromHot(String key) {
+        String hot = hotBucket();
         DeleteObjectRequest delReq = (DeleteObjectRequest) DeleteObjectRequest.builder()
                 .bucket(hot)
                 .key(key)
                 .build();
-        s3.deleteObject(delReq);
+        client().deleteObject(delReq);
         log.info("MAM archive: hot copy deleted; blob [{}] is now cold-only", key);
     }
 
@@ -106,6 +135,19 @@ public class ColdStorageService {
      * @param key blob digest key
      */
     public void restoreBlob(String key) {
+        copyColdToHot(key);
+        deleteFromCold(key);
+    }
+
+    /**
+     * Copies {@code key} from the cold bucket back to the hot bucket and
+     * verifies the copy. Does NOT delete the cold source; the caller decides
+     * whether the cold copy can be removed (see {@link #deleteFromCold(String)})
+     * once it has confirmed no other still-cold document needs it. Idempotent.
+     *
+     * @param key blob digest key
+     */
+    public void copyColdToHot(String key) {
         String hot  = hotBucket();
         String cold = coldBucket();
         S3Client s3 = client();
@@ -126,12 +168,23 @@ public class ColdStorageService {
                 .build();
         HeadObjectResponse head = s3.headObject(headReq);
         log.info("MAM restore: hot copy verified size={} etag={}", head.contentLength(), head.eTag());
+    }
 
+    /**
+     * Deletes {@code key} from the cold bucket. Call this only after
+     * {@link #copyColdToHot(String)} has confirmed the hot copy exists AND the
+     * caller has confirmed no other document still references this blob in
+     * cold storage.
+     *
+     * @param key blob digest key
+     */
+    public void deleteFromCold(String key) {
+        String cold = coldBucket();
         DeleteObjectRequest delReq = (DeleteObjectRequest) DeleteObjectRequest.builder()
                 .bucket(cold)
                 .key(key)
                 .build();
-        s3.deleteObject(delReq);
+        client().deleteObject(delReq);
         log.info("MAM restore: cold copy deleted; blob [{}] is now hot-only", key);
     }
 
@@ -139,9 +192,20 @@ public class ColdStorageService {
      * Returns {@code true} if {@code key} exists in the cold bucket.
      */
     public boolean existsInCold(String key) {
+        return existsIn(coldBucket(), key);
+    }
+
+    /**
+     * Returns {@code true} if {@code key} exists in the hot bucket.
+     */
+    public boolean existsInHot(String key) {
+        return existsIn(hotBucket(), key);
+    }
+
+    private boolean existsIn(String bucket, String key) {
         try {
             HeadObjectRequest headReq = (HeadObjectRequest) HeadObjectRequest.builder()
-                    .bucket(coldBucket())
+                    .bucket(bucket)
                     .key(key)
                     .build();
             client().headObject(headReq);
@@ -149,7 +213,7 @@ public class ColdStorageService {
         } catch (NoSuchKeyException e) {
             return false;
         } catch (S3Exception e) {
-            log.warn("MAM cold-storage: HeadObject on [{}] failed: {}", key, e.getMessage());
+            log.warn("MAM cold-storage: HeadObject on bucket=[{}] key=[{}] failed: {}", bucket, key, e.getMessage());
             return false;
         }
     }
@@ -198,10 +262,30 @@ public class ColdStorageService {
         boolean pathStyle = "true".equalsIgnoreCase(
                 Framework.getProperty(PROP_PATH_STYLE, "false"));
 
+        // A server-side CopyObject of a multi-hundred-MB video on MinIO can
+        // take far longer than the AWS SDK's default socket read timeout
+        // (30s), after which the SDK retries a few times and then fails the
+        // whole call with "Read timed out". That surfaced as the Archive
+        // button hanging and then erroring. Give the underlying Apache HTTP
+        // client generous socket/connection timeouts, and cap the overall
+        // per-API-call time well above the largest expected blob copy so a
+        // legitimately slow copy is allowed to finish rather than being
+        // aborted mid-flight.
+        ApacheHttpClient.Builder httpClient = ApacheHttpClient.builder()
+                .connectionTimeout(Duration.ofSeconds(30))
+                .socketTimeout(Duration.ofMinutes(15));
+
+        ClientOverrideConfiguration overrideConfig = ClientOverrideConfiguration.builder()
+                .apiCallTimeout(Duration.ofMinutes(20))
+                .apiCallAttemptTimeout(Duration.ofMinutes(16))
+                .build();
+
         var builder = S3Client.builder()
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(accessKey, secretKey)))
                 .region(Region.of(region))
+                .httpClientBuilder(httpClient)
+                .overrideConfiguration(overrideConfig)
                 .serviceConfiguration(S3Configuration.builder()
                         .pathStyleAccessEnabled(pathStyle)
                         .build());

@@ -95,7 +95,19 @@ public class MamRestoreWork extends AbstractWork {
             log.info("MamRestoreWork: restoring blob key=[{}] for doc [{}]", key, docId);
 
             ColdStorageService coldStorage = new ColdStorageService();
-            coldStorage.restoreBlob(key);
+            // Always copy+verify back to hot first (safe, idempotent).
+            coldStorage.copyColdToHot(key);
+
+            // Content-addressable dedup: only remove the COLD copy if no OTHER
+            // document still needs this same blob in cold storage, otherwise we
+            // would break those still-archived documents. A document "needs it
+            // in cold" if it shares this digest and is itself cold/archive-pending.
+            if (otherDocsNeedBlobInCold(key)) {
+                log.info("MamRestoreWork: blob [{}] is still referenced by another cold document; "
+                        + "keeping cold copy (dedup-safe). Doc [{}] marked hot.", key, docId);
+            } else {
+                coldStorage.deleteFromCold(key);
+            }
 
             // Stamp success
             doc.setPropertyValue(ARCHIVE_STATE_PROP, "hot");
@@ -120,6 +132,31 @@ public class MamRestoreWork extends AbstractWork {
                         docId, revertEx);
             }
             throw new NuxeoException("MamRestoreWork failed for doc [" + docId + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Whether any document OTHER than the one being restored still needs the
+     * blob {@code key} available in COLD storage. A document needs it in cold
+     * if it shares the same {@code file:content} digest and its
+     * {@code broadcast:archiveState} is {@code cold} or {@code archive-pending}.
+     * If any such document exists, deleting the cold copy would break it, so
+     * the restore must keep the cold copy in place.
+     */
+    protected boolean otherDocsNeedBlobInCold(String key) {
+        String safeKey = key.replace("'", "''");
+        String nxql = "SELECT * FROM Document WHERE content/data = '" + safeKey + "'"
+                + " AND ecm:isVersion = 0 AND ecm:isProxy = 0 AND ecm:isTrashed = 0"
+                + " AND ecm:uuid <> '" + docId + "'"
+                + " AND broadcast:archiveState IN ('cold', 'archive-pending')";
+        try {
+            return !session.query(nxql).isEmpty();
+        } catch (RuntimeException e) {
+            // If the reference check itself fails, err on the side of NOT
+            // deleting the cold copy — never lose data.
+            log.warn("MamRestoreWork: dedup reference check failed for blob [{}]; keeping cold copy "
+                    + "as a precaution: {}", key, e.getMessage());
+            return true;
         }
     }
 }

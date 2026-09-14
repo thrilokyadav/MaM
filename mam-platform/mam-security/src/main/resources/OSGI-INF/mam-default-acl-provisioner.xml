@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  Registers DefaultAclProvisioner as an actual Nuxeo component (not just
+  an extension contribution): it needs its own start() lifecycle hook to
+  run imperative ACL provisioning once the repository is guaranteed to be
+  up, so it must be a full component with an <implementation>, ordered
+  after ComponentStartOrders.REPOSITORY (see the class's own
+  getApplicationStartedOrder() override for the exact value).
+-->
+<component name="com.mam.platform.security.defaultAclProvisioner" version="1.0">
+
+  <implementation class="com.mam.platform.security.provisioning.DefaultAclProvisioner" />
+
+</component>

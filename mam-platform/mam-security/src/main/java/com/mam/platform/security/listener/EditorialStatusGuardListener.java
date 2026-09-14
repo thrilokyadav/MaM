@@ -101,14 +101,22 @@ public class EditorialStatusGuardListener implements EventListener {
             return;
         }
 
+        NuxeoPrincipal principal = context.getPrincipal();
+
         DocumentModel previous = (DocumentModel) context.getProperty(CoreEventConstants.PREVIOUS_DOCUMENT_MODEL);
         if (previous == null || !previous.hasSchema("broadcast")) {
-            // No previous state to compare against (e.g. document creation)
-            // — nothing to guard yet. A newly-created document that is
-            // itself created with editorialStatus already set to a
-            // privileged value (e.g. "approved") is a separate, narrower
-            // gap than the one this listener closes (direct-write bypass
-            // of an EXISTING asset's review); see class Javadoc.
+            // No previous state to compare against: this is document
+            // CREATION (aboutToCreate). Close the create-time bypass — a
+            // non-Administrator must not be able to create an asset that is
+            // ALREADY in a privileged editorial state (e.g.
+            // editorialStatus="approved"), which would skip the whole
+            // MAM_EDITORIAL_APPROVAL workflow. The only editorial states a
+            // non-admin may set at creation are "none" (null/blank, the
+            // normal upload path — see UploadPage.tsx) or "draft" (the
+            // pre-submission state). Administrator is exempt: the
+            // AdministratorAutoApproveListener legitimately stamps
+            // "approved" on admin-created assets.
+            guardCreation(event, doc, principal);
             return;
         }
 
@@ -118,7 +126,6 @@ public class EditorialStatusGuardListener implements EventListener {
             return;
         }
 
-        NuxeoPrincipal principal = context.getPrincipal();
         if (principal == null || principal.isAdministrator()) {
             return;
         }
@@ -139,6 +146,31 @@ public class EditorialStatusGuardListener implements EventListener {
             denyChange(event, principal, String.valueOf(after),
                     "requires the " + requiredPermission + " permission on this asset");
         }
+    }
+
+    /**
+     * Enforces the create-time rule: a non-Administrator may only create a
+     * broadcast asset with {@code editorialStatus} unset (null/blank) or
+     * {@code "draft"}. Any privileged initial state ({@code qc},
+     * {@code approved}, {@code rejected}, or any unrecognised value) is
+     * rejected with the same 403 contract as an illegitimate transition,
+     * closing the "create already-approved to skip the workflow" bypass.
+     * Administrator is exempt (auto-approve stamps {@code approved}).
+     */
+    protected void guardCreation(Event event, DocumentModel doc, NuxeoPrincipal principal) {
+        if (principal == null || principal.isAdministrator()) {
+            return;
+        }
+        Serializable initial = doc.getPropertyValue(EDITORIAL_STATUS_PROPERTY);
+        if (initial == null) {
+            return;
+        }
+        String value = String.valueOf(initial);
+        if (value.isBlank() || DRAFT.equals(value)) {
+            return;
+        }
+        denyChange(event, principal, value,
+                "a new asset may only be created with editorial status unset or 'draft'");
     }
 
     /**

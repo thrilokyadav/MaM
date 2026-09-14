@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  Registers StuckArchiveStateReconciler as an actual Nuxeo component (not
+  just an extension contribution): it needs its own start() lifecycle hook
+  to run once the repository is guaranteed to be up, so it must be a full
+  component with an <implementation>, ordered after
+  ComponentStartOrders.REPOSITORY (see the class's own
+  getApplicationStartedOrder() override for the exact value).
+
+  It reconciles any broadcast:archiveState left stuck in a transient
+  archive-pending / restore-pending state by an unclean shutdown, matching
+  the metadata back to the actual physical blob location in MinIO. A
+  healthy system has no stuck documents, so on a normal boot this is a
+  no-op.
+-->
+<component name="com.mam.platform.core.archiveReconciler" version="1.0">
+
+  <implementation class="com.mam.platform.core.archive.StuckArchiveStateReconciler" />
+
+</component>

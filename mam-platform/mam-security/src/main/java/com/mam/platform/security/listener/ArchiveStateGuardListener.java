@@ -55,6 +55,8 @@ public class ArchiveStateGuardListener implements EventListener {
 
     protected static final String HOT_STATE = "hot";
 
+    protected static final String WARM_STATE = "warm";
+
     protected static final String ARCHIVE_DATE_PROPERTY = "broadcast:archiveDate";
 
     protected static final String ARCHIVED_BY_PROPERTY = "broadcast:archivedBy";
@@ -73,10 +75,19 @@ public class ArchiveStateGuardListener implements EventListener {
             return;
         }
 
+        NuxeoPrincipal principal = context.getPrincipal();
+
         DocumentModel previous = (DocumentModel) context.getProperty(CoreEventConstants.PREVIOUS_DOCUMENT_MODEL);
         if (previous == null || !previous.hasSchema("broadcast")) {
-            // No previous state to compare against (e.g. document creation,
-            // aboutToCreate) — nothing to guard yet.
+            // No previous state to compare against: this is document
+            // CREATION (aboutToCreate). Close the create-time bypass — a
+            // non-archivist/non-admin must not be able to create an asset
+            // that is already in a privileged archive state (e.g.
+            // archiveState="cold" or a *-pending state), which would
+            // desync metadata from physical blob location. The only states
+            // a normal creator may set at creation are "none" (null/blank,
+            // the normal upload path) or "hot"/"warm" (live tiers).
+            guardCreation(event, doc, principal);
             return;
         }
 
@@ -86,7 +97,6 @@ public class ArchiveStateGuardListener implements EventListener {
             return;
         }
 
-        NuxeoPrincipal principal = context.getPrincipal();
         if (principal == null || principal.isAdministrator() || principal.isMemberOf(ARCHIVIST_GROUP)) {
             populateArchiveAuditFields(doc, after, principal);
             return;
@@ -101,6 +111,34 @@ public class ArchiveStateGuardListener implements EventListener {
         // bubbleException). markRollBack ensures this denial actually
         // aborts the save and propagates to the caller instead of being
         // logged and silently ignored.
+        event.markRollBack(denied.getMessage(), denied);
+        throw denied;
+    }
+
+    /**
+     * Enforces the create-time rule: a non-Administrator/non-archivist may
+     * only create a broadcast asset with {@code archiveState} unset
+     * (null/blank) or a live tier ({@code "hot"}/{@code "warm"}). Any
+     * privileged initial state ({@code "cold"} or a {@code *-pending}
+     * state) is rejected, closing the "create already-cold" bypass that
+     * would desync metadata from the physical blob location. Administrator
+     * and {@code mam-archivists} are exempt.
+     */
+    protected void guardCreation(Event event, DocumentModel doc, NuxeoPrincipal principal) {
+        if (principal == null || principal.isAdministrator() || principal.isMemberOf(ARCHIVIST_GROUP)) {
+            return;
+        }
+        Serializable initial = doc.getPropertyValue(ARCHIVE_STATE_PROPERTY);
+        if (initial == null) {
+            return;
+        }
+        String value = String.valueOf(initial);
+        if (value.isBlank() || HOT_STATE.equals(value) || WARM_STATE.equals(value)) {
+            return;
+        }
+        DocumentSecurityException denied = new DocumentSecurityException(
+                "A new asset may only be created with archive state unset, 'hot' or 'warm'; '" + value
+                        + "' requires the " + ARCHIVIST_GROUP + " group or an administrator.");
         event.markRollBack(denied.getMessage(), denied);
         throw denied;
     }

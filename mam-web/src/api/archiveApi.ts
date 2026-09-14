@@ -44,16 +44,19 @@ export function canRestore(doc: MamDocument): boolean {
 }
 
 /**
- * Move an asset primary blob from the hot MinIO bucket to the cold MinIO
- * bucket. Calls the MAM.ArchiveAsset automation operation which:
- *   1. Reads the blob digest from file:content
- *   2. S3 CopyObject (hot -> cold)
- *   3. HeadObject verify on cold
- *   4. DeleteObject from hot
- *   5. Sets broadcast:archiveState = "cold", archiveDate, archivedBy
+ * Initiate an async move of an asset primary blob from the hot MinIO bucket
+ * to the cold MinIO bucket. Calls the MAM.ArchiveAsset automation operation
+ * which:
+ *   1. Reads the blob digest from file:content (validates it up front)
+ *   2. Sets broadcast:archiveState = "archive-pending" (immediate)
+ *   3. Schedules MamArchiveWork on the mam-restore work queue, which does
+ *      S3 CopyObject (hot -> cold) + HeadObject verify + DeleteObject from
+ *      hot, then stamps archiveState = "cold", archiveDate, archivedBy.
  *
- * This can take several seconds for large video files. The returned promise
- * resolves only once the server responds (blob has moved).
+ * The returned document will have archiveState = "archive-pending". The move
+ * itself can take several seconds (minutes for a large master) but runs in
+ * the background, so this call returns immediately rather than blocking the
+ * request thread. Use pollUntilArchived() to track completion.
  */
 export async function archiveAsset(uid: string, signal?: AbortSignal): Promise<NuxeoDocument> {
   return runOperation<NuxeoDocument>(uid, 'MAM.ArchiveAsset', {}, signal);
@@ -111,5 +114,47 @@ export async function pollUntilRestored(
     onState?.(state);
 
     if (state !== 'restore-pending') return doc;
+  }
+}
+
+/**
+ * Polls broadcast:archiveState every intervalMs milliseconds until it
+ * leaves "archive-pending" (resolves to "cold" on success, or "hot" on
+ * failure/revert by MamArchiveWork).
+ *
+ * @param uid        Document UID to poll
+ * @param onState    Called with the current state on every poll tick
+ * @param intervalMs Poll interval in milliseconds (default 3000)
+ * @param signal     AbortSignal to stop polling early
+ * @returns          The final document once archiveState != "archive-pending"
+ */
+export async function pollUntilArchived(
+  uid: string,
+  onState?: (state: string | undefined) => void,
+  intervalMs = 3000,
+  signal?: AbortSignal,
+): Promise<NuxeoDocument> {
+  for (;;) {
+    if (signal?.aborted) throw new DOMException('Polling aborted', 'AbortError');
+
+    await new Promise<void>((res) => {
+      const t = setTimeout(res, intervalMs);
+      signal?.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true });
+    });
+
+    if (signal?.aborted) throw new DOMException('Polling aborted', 'AbortError');
+
+    const doc = await nuxeoRequest<NuxeoDocument>(`/id/${encodeURIComponent(uid)}`, {
+      method: 'GET',
+      headers: { properties: 'broadcast' },
+      signal,
+    });
+
+    const props = doc.properties as Record<string, unknown> | undefined;
+    const state = props?.['broadcast:archiveState'] as string | undefined;
+
+    onState?.(state);
+
+    if (state !== 'archive-pending') return doc;
   }
 }

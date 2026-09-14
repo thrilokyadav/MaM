@@ -76,6 +76,19 @@
       <artifactId>s3</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!--
+      AWS SDK v2 Apache HTTP client — used to configure generous socket /
+      connection timeouts on the cold-storage S3 client so a large
+      server-side CopyObject on MinIO is not aborted by the default 30s
+      read timeout. Shipped in the Nuxeo server lib dir
+      (apache-client-*.jar), so provided scope keeps it out of the addon
+      JAR while still compiling against it.
+    -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>apache-client</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 
   <build>

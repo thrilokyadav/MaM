@@ -24,6 +24,13 @@ import { LoadingState } from '../components/LoadingState';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorState } from '../components/ErrorState';
 import './pages.css';
+// ArchivePage renders its own `.asset-card`/`.asset-thumb`/`.asset-meta`
+// markup (the ArchiveRow) rather than the <AssetCard> component, so it must
+// pull in those base styles itself. Without this, when the app is loaded
+// straight into /archive (route-level code splitting means the AssetCard
+// chunk — and its CSS — may never load otherwise), the rows render unstyled
+// with a full-size thumbnail and collapsed layout.
+import '../components/AssetCard.css';
 import './ArchivePage.css';
 
 // Archive is scoped to approved assets — everything else belongs to the

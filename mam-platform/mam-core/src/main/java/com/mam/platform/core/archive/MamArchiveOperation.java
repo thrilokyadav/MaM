@@ -14,37 +14,53 @@ import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.NuxeoException;
-
-import java.util.Calendar;
+import org.nuxeo.ecm.core.work.api.WorkManager;
+import org.nuxeo.runtime.api.Framework;
 
 /**
  * Nuxeo Automation Operation: {@code MAM.ArchiveAsset}.
  *
- * <p>Moves the primary video blob from the hot MinIO bucket to the cold MinIO
- * bucket using {@link ColdStorageService#archiveBlob(String)}, which performs a
- * server-side S3 CopyObject, verifies the copy with HeadObject, and only then
- * removes the hot copy. The blob's content-addressable digest key is identical
- * in both buckets, so Nuxeo's {@code file:content} property continues to resolve
- * the blob without modification — the S3BlobProvider finds it in whichever
- * bucket it resides in.</p>
+ * <p>Initiates an asynchronous move of the primary video blob from the hot
+ * MinIO bucket to the cold MinIO bucket. The operation itself returns
+ * immediately after:</p>
+ * <ol>
+ *   <li>Validating the asset is archivable (has a blob with a digest and is
+ *       not already cold / pending).</li>
+ *   <li>Setting {@code broadcast:archiveState = "archive-pending"} so the UI
+ *       can show a progress indicator.</li>
+ *   <li>Scheduling a {@link MamArchiveWork} instance on the {@code mam-restore}
+ *       work queue, which performs the actual S3 CopyObject (hot -&gt; cold) +
+ *       HeadObject verify + delete from hot, then stamps
+ *       {@code archiveState = "cold"}, {@code archiveDate} and
+ *       {@code archivedBy}.</li>
+ * </ol>
  *
- * <p>After a successful move the operation stamps:</p>
- * <ul>
- *   <li>{@code broadcast:archiveState = "cold"}</li>
- *   <li>{@code broadcast:archiveDate} = now (UTC)</li>
- *   <li>{@code broadcast:archivedBy} = current principal</li>
- * </ul>
+ * <p>The blob's content-addressable digest key is identical in both buckets,
+ * so Nuxeo's {@code file:content} property continues to resolve the blob
+ * without modification — the S3BlobProvider finds it in whichever bucket it
+ * resides in.</p>
+ *
+ * <p>This is intentionally async (mirroring {@link MamRestoreOperation}): a
+ * large master blob's server-side copy on MinIO can take far longer than the
+ * HTTP request/socket read timeout, so running it inline in the request thread
+ * made the Archive button hang and then error with "Read timed out". The
+ * frontend polls {@code broadcast:archiveState} every few seconds until it
+ * transitions from {@code "archive-pending"} to {@code "cold"} (or back to
+ * {@code "hot"} if the move failed).</p>
  *
  * <p>Permission check: the Nuxeo server enforces {@code MAM_Archive} / {@code Write}
- * ACL before the operation runs (standard REST 403 if absent). No extra guard is
- * needed here.</p>
+ * ACL before the operation runs (standard REST 403 if absent), and
+ * {@code ArchiveStateGuardListener} additionally restricts changes to
+ * {@code broadcast:archiveState} to Administrator / {@code mam-archivists}.</p>
  */
 @Operation(
     id = MamArchiveOperation.ID,
     category = Constants.CAT_DOCUMENT,
     label = "MAM Archive Asset",
-    description = "Moves the primary blob to cold storage (MinIO cold bucket) "
-                + "and sets broadcast:archiveState to 'cold'."
+    description = "Initiates an async move of the primary blob to cold storage "
+                + "(MinIO cold bucket). Sets broadcast:archiveState to "
+                + "'archive-pending' immediately and schedules a background "
+                + "MamArchiveWork that transitions it to 'cold' on completion."
 )
 public class MamArchiveOperation {
 
@@ -53,8 +69,6 @@ public class MamArchiveOperation {
     private static final Logger log = LogManager.getLogger(MamArchiveOperation.class);
 
     private static final String ARCHIVE_STATE_PROP = "broadcast:archiveState";
-    private static final String ARCHIVE_DATE_PROP  = "broadcast:archiveDate";
-    private static final String ARCHIVED_BY_PROP   = "broadcast:archivedBy";
 
     @Context
     protected CoreSession session;
@@ -62,17 +76,20 @@ public class MamArchiveOperation {
     @OperationMethod
     public DocumentModel run(DocumentModel doc) {
         String uid = doc.getId();
-        log.info("MAM.ArchiveAsset: starting archive for doc [{}] ({})", uid, doc.getTitle());
+        log.info("MAM.ArchiveAsset: initiating archive for doc [{}] ({})", uid, doc.getTitle());
 
         // --- Validate current state ---
         String currentState = (String) doc.getPropertyValue(ARCHIVE_STATE_PROP);
-        if ("cold".equals(currentState) || "restore-pending".equals(currentState)) {
+        if ("cold".equals(currentState) || "restore-pending".equals(currentState)
+                || "archive-pending".equals(currentState)) {
             throw new NuxeoException(
                     "MAM.ArchiveAsset: doc [" + uid + "] is already in state [" + currentState
                     + "]; archive is only valid from 'hot' or 'warm' state.");
         }
 
-        // --- Resolve blob digest key ---
+        // --- Validate a blob is present up front, so the UI gets an
+        //     immediate, clear error rather than the background work failing
+        //     silently later. ---
         Blob blob = (Blob) doc.getPropertyValue("file:content");
         if (blob == null) {
             throw new NuxeoException(
@@ -86,22 +103,30 @@ public class MamArchiveOperation {
                     + "Ensure the S3BlobProvider has computed a digest for this blob.");
         }
 
-        log.info("MAM.ArchiveAsset: blob digest key=[{}] size={} for doc [{}]",
-                key, blob.getLength(), uid);
-
-        // --- Move blob: hot -> cold (copy + verify + delete) ---
-        ColdStorageService coldStorage = new ColdStorageService();
-        coldStorage.archiveBlob(key);
-
-        // --- Update metadata ---
-        doc.setPropertyValue(ARCHIVE_STATE_PROP, "cold");
-        doc.setPropertyValue(ARCHIVE_DATE_PROP,  Calendar.getInstance());
-        doc.setPropertyValue(ARCHIVED_BY_PROP,   session.getPrincipal().getName());
-
+        // --- Stamp 'archive-pending' so the UI reflects in-progress state ---
+        // The physical hot->cold blob copy can take many seconds (minutes for
+        // a large master) over the MinIO/S3 link, which must NOT block the
+        // HTTP request thread the UI is awaiting. This mirrors
+        // MAM.RestoreAsset: set an immediate pending state, schedule the
+        // actual move as a background Work, and return right away. The
+        // frontend polls broadcast:archiveState until it leaves
+        // 'archive-pending' (-> 'cold' on success, or reverts to 'hot' on
+        // failure).
+        doc.setPropertyValue(ARCHIVE_STATE_PROP, "archive-pending");
         DocumentModel saved = session.saveDocument(doc);
         session.save();
 
-        log.info("MAM.ArchiveAsset: doc [{}] successfully archived to cold storage", uid);
+        // --- Schedule async work ---
+        MamArchiveWork work = new MamArchiveWork(uid, session.getRepositoryName(),
+                session.getPrincipal().getName());
+        WorkManager wm = Framework.getService(WorkManager.class);
+        if (wm == null) {
+            throw new NuxeoException("MAM.ArchiveAsset: WorkManager service unavailable");
+        }
+        wm.schedule(work, WorkManager.Scheduling.IF_NOT_RUNNING_OR_SCHEDULED);
+
+        log.info("MAM.ArchiveAsset: doc [{}] set to archive-pending; MamArchiveWork scheduled (blob key=[{}])",
+                uid, key);
         return saved;
     }
 }

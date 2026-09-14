@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!--
+  (C) Copyright 2026 MAM Platform. All rights reserved.
+  Proprietary and confidential.
+
+  MAM scheduled orphaned-binary garbage collection.
+
+  Nuxeo never deletes a blob when its document is deleted (blobs are
+  content-addressable and may be shared by several documents), so space
+  from deleted / emptied-from-trash assets is only reclaimed by a
+  mark-and-sweep GC. Out of the box that GC is a manual Admin Center
+  action; this contribution runs it automatically on a cron so storage
+  self-cleans without an operator remembering to trigger it.
+
+  Wiring:
+    1. A <schedule> fires the "mamBinariesGarbageCollect" event on a cron
+       (default: weekly, Sunday 03:00 server time; override the cron via
+       the mam.binaries.gc.cron nuxeo.conf property).
+    2. MamScheduledBinariesGcListener reacts to that event and schedules
+       MamBinariesGarbageCollectionWork (deduplicated, never stacks a
+       second concurrent GC).
+    3. The Work calls DocumentBlobManager.garbageCollectBinaries(true),
+       which deletes every blob not referenced by any document from the
+       S3 / MinIO buckets.
+
+  To disable, set mam.binaries.gc.enabled=false in nuxeo.conf, or run the
+  GC purely on demand by scheduling the Work from an admin script.
+-->
+<component name="com.mam.platform.core.gc" version="1.0">
+
+  <require>org.nuxeo.ecm.core.scheduler.SchedulerService</require>
+
+  <!-- Cron schedule. The Quartz cron here is
+       "seconds minutes hours day-of-month month day-of-week". The default
+       below is 03:00 every Sunday. It is parameterised so a deployment can
+       override the cadence in nuxeo.conf without editing this file:
+         mam.binaries.gc.cron=0 0 3 ? * SUN
+         mam.binaries.gc.enabled=true
+  -->
+  <extension target="org.nuxeo.ecm.core.scheduler.SchedulerService" point="schedule">
+    <schedule id="mamBinariesGarbageCollect" enabled="${mam.binaries.gc.enabled:=true}">
+      <event>mamBinariesGarbageCollect</event>
+      <eventCategory>mamMaintenance</eventCategory>
+      <username>Administrator</username>
+      <cronExpression>${mam.binaries.gc.cron:=0 0 3 ? * SUN}</cronExpression>
+    </schedule>
+  </extension>
+
+  <!-- Listener that turns the scheduled event into the background GC Work. -->
+  <extension target="org.nuxeo.ecm.core.event.EventServiceComponent" point="listener">
+    <listener name="mamScheduledBinariesGc"
+              class="com.mam.platform.core.gc.MamScheduledBinariesGcListener"
+              async="true" postCommit="false" priority="10">
+      <event>mamBinariesGarbageCollect</event>
+    </listener>
+  </extension>
+
+  <!-- Dedicated single-thread queue for the GC Work: a mark-and-sweep must
+       never run concurrently with itself, and one background sweep at a time
+       is exactly right for an I/O-bound reclaim job. -->
+  <extension target="org.nuxeo.ecm.core.work.service" point="queues">
+    <queue id="mamBinariesGC"
+           name="MAM Orphaned Binaries GC Queue"
+           maxThreads="1"
+           clearCompletedAfterSeconds="3600" />
+  </extension>
+
+</component>
